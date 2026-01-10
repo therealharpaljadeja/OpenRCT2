@@ -374,9 +374,14 @@ void RenderRideStatus(const json& result)
     canvas.KeyValue("Lifetime riders", ride.value("totalCustomers", 0));
     canvas.KeyValue("Favourites", ride.value("favouriteGuests", 0));
 
-    if (ride.contains("profitThisMonth") || ride.contains("incomePerHour"))
+    if (ride.contains("profitThisMonth") || ride.contains("incomePerHour") || ride.contains("price"))
     {
         canvas.Section("Finance");
+        canvas.KeyValue("Price", util::FormatCurrency(ride.value("price", 0.0)));
+        if (ride.value("numPrices", 1) > 1 && ride.contains("secondaryPrice"))
+        {
+            canvas.KeyValue("Secondary price", util::FormatCurrency(ride.value("secondaryPrice", 0.0)));
+        }
         double profit = ride.contains("profitPerHour") ? ride.value("profitPerHour", 0.0) : ride.value("profitThisMonth", 0.0);
         canvas.KeyValue("Profit/hr", util::FormatCurrency(profit));
         canvas.KeyValue("Income/hr", util::FormatCurrency(ride.value("incomePerHour", 0.0)));

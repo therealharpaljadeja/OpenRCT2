@@ -37,11 +37,20 @@ void RenderNewsList(const json& result)
     table.headers = { "Type", "Text", "Date" };
     for (const auto& item : items)
     {
+        auto text = item.value("text", std::string(""));
+        if (text.empty())
+        {
+            continue;
+        }
         std::ostringstream date;
         date << item.value("monthName", std::string("")) << " day " << item.value("day", 0) << ", year "
              << item.value("year", 0);
-        table.rows.push_back({ item.value("type", std::string("")), item.value("text", std::string("")),
-            date.str() });
+        table.rows.push_back({ item.value("type", std::string("")), text, date.str() });
+    }
+    if (table.rows.empty())
+    {
+        canvas.Paragraph("No news items.");
+        return;
     }
     canvas.Table(table);
 }

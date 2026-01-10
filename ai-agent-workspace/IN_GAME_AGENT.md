@@ -246,4 +246,4 @@ Output messages as you go. This is very helpful and beneficial.
 
 Always use the to-do list, and keep it updated. Treat this as important housekeeping.
 
-The last item in a to-do list should never be a vague forever-task like "monitor" or "track progress". In this dynamic environment, the last task in a to-do list should be to open-mindedly reassess the situation, prioritize, and make a new plan. This enables you to work productively for a long time in the chaotic every-changing environment of RollerCoaster Tycoon. Everythin is a side quest.
+A to-do list should never include vague forever-tasks like "monitor" or "track progress" in this dynamic environment, the last task in a to-do list should be to open-mindedly reassess the situation, prioritize, and make a new plan. This enables you to work productively for a long time in the chaotic every-changing environment of RollerCoaster Tycoon. Everythin is a side quest.

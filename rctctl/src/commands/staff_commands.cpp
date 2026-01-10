@@ -79,13 +79,14 @@ void AppendStaffCommands(std::vector<CommandSpec>& specs)
         "staff",
         { "hire" },
         "Hire new staff.",
-        "Hires staff via staff.hire --type <handyman|mechanic|security|entertainer>.",
-        { CommandArgSpec{ "type", "Staff role.", true, "STRING" },
+        "Hires staff via staff.hire --type <handyman|mechanic|security|entertainer>. Alias: --role.",
+        { CommandArgSpec{ "type", "Staff role (handyman, mechanic, security, entertainer).", false, "STRING" },
+          CommandArgSpec{ "role", "Alias for --type.", false, "STRING" },
           CommandArgSpec{ "costume", "Entertainer costume index.", false, "INT" },
           CommandArgSpec{ "auto-place", "true to auto-place in park.", false, "BOOL" } },
         [](const ParsedArgs& args) {
             json params = json::object();
-            params["type"] = cli::RequireStringOption(args, { "type" }, "staff type");
+            params["type"] = cli::RequireStringOption(args, { "type", "role" }, "staff type (--type or --role)");
             if (auto costume = cli::GetIntOption(args, { "costume" }))
             {
                 params["costume"] = *costume;

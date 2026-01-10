@@ -51,10 +51,10 @@ void AppendNewsWeatherCommands(std::vector<CommandSpec>& specs)
     specs.push_back(CommandSpec{
         "news",
         { "list" },
-        "Show news feed.",
-        "Displays news items including archived. Use --archived=false to show only recent, --limit to cap results.",
+        "Show recent news feed.",
+        "Displays the 10 most recent news items (including archived). Use --limit to change the count.",
         { CommandArgSpec{ "archived", "Include archived news items (default: true).", false, "BOOL" },
-          CommandArgSpec{ "limit", "Maximum items to display.", false, "INT" } },
+          CommandArgSpec{ "limit", "Maximum items to display (default: 10).", false, "INT" } },
         [](const ParsedArgs& args) {
             json params = json::object();
 
@@ -64,14 +64,17 @@ void AppendNewsWeatherCommands(std::vector<CommandSpec>& specs)
                 includeArchived = *archived;
             }
 
-            if (auto limit = cli::GetIntOption(args, { "limit" }))
+            // Default to 10 items
+            int limit = 10;
+            if (auto userLimit = cli::GetIntOption(args, { "limit" }))
             {
-                if (*limit < 1)
+                if (*userLimit < 1)
                 {
                     throw std::runtime_error("Invalid: --limit must be at least 1");
                 }
-                params["limit"] = *limit;
+                limit = *userLimit;
             }
+            params["limit"] = limit;
 
             // Use appropriate RPC method based on archived flag
             std::string method = includeArchived ? "news.archive" : "news.recent";

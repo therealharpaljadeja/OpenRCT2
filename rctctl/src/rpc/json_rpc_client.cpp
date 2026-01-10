@@ -12,6 +12,7 @@
     #include <arpa/inet.h>
     #include <netdb.h>
     #include <netinet/in.h>
+    #include <netinet/tcp.h>
     #include <sys/socket.h>
     #include <unistd.h>
 #endif
@@ -67,12 +68,35 @@ public:
 #endif
         Close();
 
+        auto portStr = std::to_string(_port);
+
+        // Fast path: skip DNS resolution for numeric IPv4 addresses (common case: 127.0.0.1)
+        sockaddr_in addr4{};
+        if (inet_pton(AF_INET, _host.c_str(), &addr4.sin_addr) == 1)
+        {
+            addr4.sin_family = AF_INET;
+            addr4.sin_port = htons(_port);
+
+            SocketHandle candidate = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (candidate != kInvalidSocket)
+            {
+                if (::connect(candidate, reinterpret_cast<sockaddr*>(&addr4), sizeof(addr4)) == 0)
+                {
+                    _socket = candidate;
+                    SetSocketOptions();
+                    return;
+                }
+                CloseSocket(candidate);
+            }
+            throw std::runtime_error("Internal: Unable to connect to " + _host + ":" + portStr);
+        }
+
+        // Slow path: DNS resolution needed for hostnames
         addrinfo hints{};
-        hints.ai_family = AF_UNSPEC;
+        hints.ai_family = AF_INET; // Prefer IPv4 for localhost connections
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
 
-        auto portStr = std::to_string(_port);
         addrinfo* result = nullptr;
         const int rc = getaddrinfo(_host.c_str(), portStr.c_str(), &hints, &result);
         if (rc != 0)
@@ -103,6 +127,19 @@ public:
         {
             throw std::runtime_error("Internal: Unable to connect to " + _host + ":" + portStr);
         }
+
+        SetSocketOptions();
+    }
+
+    void SetSocketOptions()
+    {
+        // Disable Nagle's algorithm to reduce latency for small RPC messages
+        int flag = 1;
+#if defined(_WIN32)
+        setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&flag), sizeof(flag));
+#else
+        setsockopt(_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+#endif
     }
 
     void Send(const std::string& data)

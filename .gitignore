@@ -319,3 +319,4 @@ game-logs/*
 error_log.log
 crash_log.log
 test/tests/testdata/parks/ForestFrontiers.park
+test/tests/testdata/parks/Ramp Land.park

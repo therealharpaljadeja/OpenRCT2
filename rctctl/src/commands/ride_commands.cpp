@@ -378,7 +378,8 @@ void AppendRideCommands(std::vector<CommandSpec>& specs)
         "rides",
         { "test" },
         "Put a ride into TESTING.",
-        "Queues the ride for testing via rides.setStatus RPC.",
+        "Queues the ride for testing to calculate ratings. Testing typically takes 1-2 minutes for most rides. "
+        "Use 'rides get' afterward to check ratings once testing completes.",
         { CommandArgSpec{ "id", "Ride identifier (numeric).", false, "ID" },
           CommandArgSpec{ "name", "Ride name (case-insensitive).", false, "NAME" } },
         [](const ParsedArgs& args) {
@@ -571,7 +572,8 @@ void AppendRideCommands(std::vector<CommandSpec>& specs)
         { "refurbish" },
         "Refurbish a ride to restore reliability.",
         "Resets a ride's breakdown history and restores it to new condition without demolishing. "
-        "This is the safe way to improve a ride's reliability. Use --id or --name to select the ride.",
+        "This is the safe way to improve a ride's reliability. The ride must be empty of guests first; "
+        "use 'rides close --evict-guests' before refurbishing. Use --id or --name to select the ride.",
         { CommandArgSpec{ "id", "Ride identifier (numeric).", false, "ID" },
           CommandArgSpec{ "name", "Ride name (case-insensitive).", false, "NAME" } },
         [](const ParsedArgs& args) {
