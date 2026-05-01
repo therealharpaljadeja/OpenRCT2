@@ -407,7 +407,7 @@ if (NOT CMAKE_CROSSCOMPILING)
         file(GLOB_RECURSE dependent_files CONFIGURE_DEPENDS "${ROOT_DIR}/resources/${graphics_file}/*")
         add_custom_command(
             OUTPUT ${output_file}
-            COMMAND ./openrct2-cli sprite build "${CMAKE_BINARY_DIR}/${output_file}" "${json_file}"
+            COMMAND ./openrct2-cli sprite build "${CMAKE_BINARY_DIR}/${output_file}" "${json_file}" --mode dithering
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
             DEPENDS ${dependent_files}
         )
