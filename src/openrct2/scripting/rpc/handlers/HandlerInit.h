@@ -26,6 +26,7 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
     void InitMapHandlers();
     void InitStaffHandlers();
     void InitRideHandlers();
+    void InitChainHandlers();
 
 } // namespace OpenRCT2::Scripting::Rpc::Handlers
 

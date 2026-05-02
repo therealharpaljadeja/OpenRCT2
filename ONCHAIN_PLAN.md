@@ -497,10 +497,10 @@ Park-level loan stays the same — `LendingPool` contract, treasury borrows/repa
 ## 11. Tasks & subtasks
 
 ### M0 — Foundations (1–2 days)
-- [ ] **0.1** Build flag `OPENRCT2_CHAIN`; runtime `--chain/--no-chain` flag.
-- [ ] **0.2** Stub `ChainHandlers.cpp`; `chain.status` returns `{enabled:false}` when disabled.
-- [ ] **0.3** Stub `rctctl chain status` end-to-end.
-- [ ] **0.4** Add `CHAIN.md` describing the throughput demo intent.
+- [x] **0.1** Build flag `OPENRCT2_CHAIN`; runtime `--chain/--no-chain` flag.
+- [x] **0.2** Stub `ChainHandlers.cpp`; `chain.status` returns `{enabled:false}` when disabled.
+- [x] **0.3** Stub `rctctl chain status` end-to-end.
+- [x] **0.4** Add `CHAIN.md` describing the throughput demo intent.
 
 ### M1 — Contracts (3–4 days)
 - [ ] **1.1** Foundry project under `contracts/`.

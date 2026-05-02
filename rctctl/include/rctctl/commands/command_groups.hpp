@@ -17,5 +17,6 @@ void AppendFinanceCommands(std::vector<cli::CommandSpec>& specs);
 void AppendNewsWeatherCommands(std::vector<cli::CommandSpec>& specs);
 void AppendWindowCommands(std::vector<cli::CommandSpec>& specs);
 void AppendBugCommands(std::vector<cli::CommandSpec>& specs);
+void AppendChainCommands(std::vector<cli::CommandSpec>& specs);
 
 } // namespace rctctl::commands

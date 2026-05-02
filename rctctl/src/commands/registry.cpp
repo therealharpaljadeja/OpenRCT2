@@ -45,6 +45,8 @@ constexpr ResourceInfo kResourceDescriptions[] = {
     {"awards", "Park awards"},
     {"news", "News feed"},
     {"weather", "Weather status and forecast"},
+    // Onchain
+    {"chain", "Monad chain integration status and throughput"},
     // Meta
     {"bug", "Report bugs or observations"},
 };
@@ -65,6 +67,7 @@ const std::vector<cli::CommandSpec>& BuildRegistry()
         AppendNewsWeatherCommands(specs);
         // AppendWindowCommands(specs); // Disabled - don't expose window control to Claude
         AppendBugCommands(specs);
+        AppendChainCommands(specs);
         return specs;
     }();
     return registry;
