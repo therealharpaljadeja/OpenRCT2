@@ -173,6 +173,13 @@ test("malformed JSON returns -32700 with id=null", async () => {
     });
 });
 
+test("outbox.status reports {enabled: false} when no outbox is configured", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 60, method: "outbox.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
 test("guest.address returns the cached HD-derived address for a given index", async () => {
     await withServer(async (sock) => {
         const expected = deriveGuest(TEST_MNEMONIC, 5).address;

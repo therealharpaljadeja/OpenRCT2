@@ -1,6 +1,7 @@
 import type {SidecarConfig} from "../config.js";
 import type {DerivedAccount} from "../derive/index.js";
 import type {GuestAddressCache} from "../derive/cache.js";
+import type {OutboxReader} from "../outbox/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -19,6 +20,9 @@ export interface SidecarRuntime {
     /// mnemonic outside the keystore module itself; addresses are looked up here so the
     /// game-facing IPC and the future batcher can share one source of truth.
     guestCache: GuestAddressCache;
+    /// Outbox reader (M2.4). `undefined` when no `--outbox` was passed — the sidecar still
+    /// boots fine without a producer, useful for unit tests and ahead-of-game-launch ops.
+    outboxReader?: OutboxReader;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -79,6 +83,11 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     // Game uses this on `SpawnGuest` to look up the guest's onchain address by HD index
     // (plan §5.1, §5.3 `GuestEntered`). Cheap after first call thanks to the cache.
     server.register("guest.address", guestAddress);
+    // M2.4: outbox drain status — `rctctl chain status` will eventually surface this. Returns
+    // `{enabled: false}` when no `--outbox` was configured so callers can branch cleanly.
+    server.register("outbox.status", () =>
+        runtime.outboxReader ? {enabled: true, ...runtime.outboxReader.stats()} : {enabled: false},
+    );
 }
 
 /// Pulls a non-negative integer `index` out of either an object-form (`{index: N}`) or a

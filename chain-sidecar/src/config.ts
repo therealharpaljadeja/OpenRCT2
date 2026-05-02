@@ -37,6 +37,14 @@ export interface SidecarConfig {
     /// Resolved at parse time so `main.ts` doesn't have to repeat the env / file fallbacks.
     keystorePassphrase: string;
     relayerCount: number;
+    /// M2.4: optional outbox WAL path. When set, the sidecar starts an `OutboxReader` at
+    /// boot and drains game events from it. Absent in tests / when the game isn't running.
+    outboxPath?: string;
+    /// Cursor file. Defaults to `${outboxPath}.cursor` so a single `--outbox` flag covers
+    /// the common case.
+    outboxCursorPath?: string;
+    /// Reader poll interval; the default in `OutboxReader` is fine for production.
+    outboxPollIntervalMs?: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -47,6 +55,9 @@ Options:
   --keystore <path>                Encrypted-mnemonic keystore. Created on first run if missing. (required)
   --keystore-passphrase-file <p>   Read keystore passphrase from this file (overrides KEYSTORE_PASSPHRASE)
   --relayer-count <n>              Treasury-funded relayer EOAs, ${MIN_RELAYER_COUNT}-${MAX_RELAYER_COUNT} (default ${DEFAULT_RELAYER_COUNT})
+  --outbox <path>                  Game-side outbox WAL to drain (M2.4). Reader is disabled when omitted.
+  --outbox-cursor <path>           Cursor file (default: <outbox>.cursor)
+  --outbox-poll-ms <n>             Poll interval in ms (default: 50)
   -h, --help                       Show this help
 
 Environment:
@@ -60,6 +71,9 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let keystorePath: string | undefined;
     let keystorePassphraseFile: string | undefined;
     let relayerCount = DEFAULT_RELAYER_COUNT;
+    let outboxPath: string | undefined;
+    let outboxCursorPath: string | undefined;
+    let outboxPollIntervalMs: number | undefined;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -91,6 +105,21 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 relayerCount = n;
                 break;
             }
+            case "--outbox":
+                outboxPath = argv[++i];
+                break;
+            case "--outbox-cursor":
+                outboxCursorPath = argv[++i];
+                break;
+            case "--outbox-poll-ms": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 60_000) {
+                    throw new Error(`--outbox-poll-ms must be an integer in [1, 60000], got ${String(raw)}`);
+                }
+                outboxPollIntervalMs = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -103,7 +132,14 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
 
     const resolvedDeployments = resolve(deploymentsPath);
     const deployments = loadDeployments(resolvedDeployments);
-    return {
+    const resolvedOutbox = outboxPath ? resolve(outboxPath) : undefined;
+    const resolvedOutboxCursor = outboxCursorPath
+        ? resolve(outboxCursorPath)
+        : resolvedOutbox
+          ? `${resolvedOutbox}.cursor`
+          : undefined;
+    // exactOptionalPropertyTypes: undefined keys must be *omitted*, not present-with-undefined.
+    const config: SidecarConfig = {
         socketPath: resolve(socketPath),
         deploymentsPath: resolvedDeployments,
         deployments,
@@ -111,6 +147,10 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         keystorePassphrase,
         relayerCount,
     };
+    if (resolvedOutbox) config.outboxPath = resolvedOutbox;
+    if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;
+    if (outboxPollIntervalMs !== undefined) config.outboxPollIntervalMs = outboxPollIntervalMs;
+    return config;
 }
 
 /// File flag wins over env var so deployment automation can pin the source explicitly without

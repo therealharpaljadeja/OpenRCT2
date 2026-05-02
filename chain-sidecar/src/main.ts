@@ -6,6 +6,7 @@ import {RpcServer} from "./ipc/server.js";
 import {registerCoreHandlers, type SidecarRuntime} from "./ipc/handlers.js";
 import {KeystoreError, loadOrCreateKeystoreFile} from "./keystore/index.js";
 import {log} from "./log.js";
+import {OutboxReader} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
 /// mnemonic, derives the relayer pool, and waits for SIGINT/SIGTERM. Subsequent milestones
@@ -52,6 +53,16 @@ async function main(): Promise<void> {
 
     const guestCache = new GuestAddressCache(unlocked.mnemonic);
 
+    let outboxReader: OutboxReader | undefined;
+    if (config.outboxPath && config.outboxCursorPath) {
+        const opts: ConstructorParameters<typeof OutboxReader>[0] = {
+            walPath: config.outboxPath,
+            cursorPath: config.outboxCursorPath,
+        };
+        if (config.outboxPollIntervalMs !== undefined) opts.pollIntervalMs = config.outboxPollIntervalMs;
+        outboxReader = new OutboxReader(opts);
+    }
+
     const runtime: SidecarRuntime = {
         config,
         keystoreCreatedAt: unlocked.createdAt,
@@ -59,23 +70,34 @@ async function main(): Promise<void> {
         relayers,
         guestCache,
     };
+    if (outboxReader) runtime.outboxReader = outboxReader;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
 
     await server.listen();
+    if (outboxReader) {
+        // Stub handler until M3 wires the batcher / funder / venue mirror. Logging at debug
+        // because at full throughput this is thousands of lines/sec; the metric counters in
+        // `outboxReader.stats()` are the primary surface in the meantime.
+        await outboxReader.start((event) => {
+            log.debug({event}, "outbox event");
+        });
+    }
     log.info(
         {
             socket: config.socketPath,
             chainId: config.deployments.chainId,
             settlementBatcher: config.deployments.demoPark.settlementBatcher,
             relayers: relayers.length,
+            outbox: config.outboxPath ?? null,
         },
         "sidecar ready",
     );
 
     const shutdown = async (signal: string): Promise<void> => {
         log.info({signal}, "shutting down");
+        if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         await server.close();
         process.exit(0);
     };
