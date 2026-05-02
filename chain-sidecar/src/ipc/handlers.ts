@@ -2,6 +2,8 @@ import type {SidecarConfig} from "../config.js";
 import type {DerivedAccount} from "../derive/index.js";
 import type {GuestAddressCache} from "../derive/cache.js";
 import type {OutboxReader} from "../outbox/index.js";
+import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js";
+import {parkLaunchSetup} from "../chain/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -23,6 +25,12 @@ export interface SidecarRuntime {
     /// Outbox reader (M2.4). `undefined` when no `--outbox` was passed — the sidecar still
     /// boots fine without a producer, useful for unit tests and ahead-of-game-launch ops.
     outboxReader?: OutboxReader;
+    /// On-chain plumbing (M2.5). All three are present together when `--rpc-url` and a
+    /// faucet-owner key are supplied; otherwise the sidecar runs in offline mode and
+    /// `chain.balances` / `chain.faucet.drip` return InvalidRequest.
+    balances?: BalanceReader;
+    faucet?: FaucetWriter;
+    topup?: RelayerTopUp;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -88,6 +96,54 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("outbox.status", () =>
         runtime.outboxReader ? {enabled: true, ...runtime.outboxReader.stats()} : {enabled: false},
     );
+    // M2.5 — on-chain plumbing. Same pattern as outbox.status: callers always get a defined
+    // shape and can branch on `enabled`.
+    server.register("chain.balances", async () => {
+        if (!runtime.balances) return {enabled: false};
+        const treasury = runtime.config.deployments.demoPark.treasury;
+        const relayerAddrs = runtime.relayers.map((r) => r.address);
+        const [treasuryPark, relayerMon] = await Promise.all([
+            runtime.balances.parkBalance(treasury),
+            runtime.balances.nativeBalances(relayerAddrs),
+        ]);
+        return {
+            enabled: true,
+            treasury: {address: treasury, parkWei: treasuryPark.toString()},
+            relayers: relayerAddrs.map((address, i) => ({
+                index: i,
+                address,
+                monWei: relayerMon[i]!.toString(),
+            })),
+        };
+    });
+    server.register("chain.topup.status", () => {
+        if (!runtime.topup) return {enabled: false};
+        const s = runtime.topup.stats();
+        return {enabled: true, ...s};
+    });
+    server.register("chain.faucet.drip", async () => {
+        if (!runtime.faucet || !runtime.topup) {
+            throw new RpcError(
+                ErrorCode.InvalidRequest,
+                "chain.faucet.drip requires --rpc-url and a faucet-owner key",
+            );
+        }
+        // Park-launch flow: drip the standing PARK quota into treasury, then ask the top-up
+        // loop to fire a single tick so any under-water relayers come up to target now (not
+        // at the next interval).
+        const result = await parkLaunchSetup(runtime.faucet, {
+            treasury: runtime.config.deployments.demoPark.treasury,
+            relayers: runtime.relayers.map((r) => r.address),
+            parkAmount: runtime.config.parkLaunchWei,
+            monPerRelayer: runtime.config.monTargetWei,
+        });
+        return {
+            parkTx: result.parkTx,
+            monTx: result.monTx,
+            parkAmountWei: runtime.config.parkLaunchWei.toString(),
+            monPerRelayerWei: runtime.config.monTargetWei.toString(),
+        };
+    });
 }
 
 /// Pulls a non-negative integer `index` out of either an object-form (`{index: N}`) or a

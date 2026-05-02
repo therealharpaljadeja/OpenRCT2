@@ -7,6 +7,16 @@ import {registerCoreHandlers, type SidecarRuntime} from "./ipc/handlers.js";
 import {KeystoreError, loadOrCreateKeystoreFile} from "./keystore/index.js";
 import {log} from "./log.js";
 import {OutboxReader} from "./outbox/index.js";
+import {
+    createBalanceReader,
+    createFaucetWriter,
+    makeFaucetOwnerClient,
+    makePublicClient,
+    parkLaunchSetup,
+    RelayerTopUp,
+    type BalanceReader,
+    type FaucetWriter,
+} from "./chain/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
 /// mnemonic, derives the relayer pool, and waits for SIGINT/SIGTERM. Subsequent milestones
@@ -63,6 +73,35 @@ async function main(): Promise<void> {
         outboxReader = new OutboxReader(opts);
     }
 
+    let balances: BalanceReader | undefined;
+    let faucet: FaucetWriter | undefined;
+    let topup: RelayerTopUp | undefined;
+    if (config.rpcUrl) {
+        const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
+        balances = createBalanceReader({
+            publicClient,
+            parkToken: config.deployments.globals.parkToken,
+        });
+        if (config.faucetOwnerKey) {
+            const walletClient = makeFaucetOwnerClient(
+                config.deployments.chainId,
+                config.rpcUrl,
+                config.faucetOwnerKey,
+            );
+            faucet = createFaucetWriter({
+                walletClient,
+                publicClient,
+                faucetAddress: config.deployments.globals.faucet,
+            });
+            topup = new RelayerTopUp(balances, faucet, {
+                relayers: relayers.map((r) => r.address),
+                lowWater: config.monLowWaterWei,
+                target: config.monTargetWei,
+                intervalMs: config.topupIntervalMs,
+            });
+        }
+    }
+
     const runtime: SidecarRuntime = {
         config,
         keystoreCreatedAt: unlocked.createdAt,
@@ -71,6 +110,9 @@ async function main(): Promise<void> {
         guestCache,
     };
     if (outboxReader) runtime.outboxReader = outboxReader;
+    if (balances) runtime.balances = balances;
+    if (faucet) runtime.faucet = faucet;
+    if (topup) runtime.topup = topup;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
@@ -84,6 +126,7 @@ async function main(): Promise<void> {
             log.debug({event}, "outbox event");
         });
     }
+    if (topup) topup.start();
     log.info(
         {
             socket: config.socketPath,
@@ -91,12 +134,15 @@ async function main(): Promise<void> {
             settlementBatcher: config.deployments.demoPark.settlementBatcher,
             relayers: relayers.length,
             outbox: config.outboxPath ?? null,
+            rpc: config.rpcUrl ?? null,
+            faucetOwner: faucet ? "configured" : null,
         },
         "sidecar ready",
     );
 
     const shutdown = async (signal: string): Promise<void> => {
         log.info({signal}, "shutting down");
+        if (topup) await topup.stop().catch((err) => log.error({err}, "topup stop failed"));
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         await server.close();
         process.exit(0);

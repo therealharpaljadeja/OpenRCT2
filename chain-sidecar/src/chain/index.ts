@@ -1,0 +1,14 @@
+/// On-chain RPC plumbing for the sidecar — read-side balances + write-side Faucet ops +
+/// relayer-pool MON top-up loop. M2.5 lands the abstractions and viem-backed
+/// implementations; the batcher / funder / venue mirror (M3) consume the same primitives.
+export {makeChain, makePublicClient, makeFaucetOwnerClient} from "./clients.js";
+export {createBalanceReader, type BalanceReader, type BalanceReaderOptions} from "./balances.js";
+export {
+    createFaucetWriter,
+    parkLaunchSetup,
+    type FaucetWriter,
+    type FaucetWriterOptions,
+    type ParkLaunchOptions,
+} from "./faucet.js";
+export {RelayerTopUp, type RelayerTopUpOptions, type RelayerTopUpStats} from "./topup.js";
+export {PARK_TOKEN_ABI, FAUCET_ABI} from "./abis.js";

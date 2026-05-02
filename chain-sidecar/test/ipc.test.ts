@@ -173,6 +173,28 @@ test("malformed JSON returns -32700 with id=null", async () => {
     });
 });
 
+test("chain.balances reports {enabled: false} when no --rpc-url is configured", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 70, method: "chain.balances"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.topup.status reports {enabled: false} without chain plumbing", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 71, method: "chain.topup.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.faucet.drip rejects with InvalidRequest when no faucet writer is configured", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 72, method: "chain.faucet.drip"});
+        assert.equal(r.error?.code, -32600);
+        assert.match(r.error?.message ?? "", /requires --rpc-url/);
+    });
+});
+
 test("outbox.status reports {enabled: false} when no outbox is configured", async () => {
     await withServer(async (sock) => {
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 60, method: "outbox.status"});
