@@ -1,0 +1,31 @@
+{
+  "name": "rct2-chain-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-guest onchain wallets sidecar for the RCT2 × Monad throughput demo. See OpenRCT2/ONCHAIN_PLAN.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/main.js",
+  "bin": {
+    "rct2-chain-sidecar": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "clean": "rm -rf dist",
+    "rebuild": "npm run clean && npm run build",
+    "start": "node dist/main.js",
+    "test": "node --test --import tsx/esm test/*.test.ts",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "pino": "^9.5.0",
+    "viem": "^2.21.45"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

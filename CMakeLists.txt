@@ -461,6 +461,11 @@ if (TARGET graphics)
     add_dependencies(agent_bundle graphics)
 endif()
 
+# Chain mode sidecar (Node.js + TypeScript). The CMakeLists in chain-sidecar/ adds itself to
+# the agent_bundle target when `node`/`npm` are available; otherwise it prints a skip notice
+# and contributes nothing — keeps non-Node CI environments working.
+add_subdirectory("chain-sidecar")
+
 # On macOS, ensure the bundle is always properly signed after agent_bundle builds.
 # This guards against signature invalidation when parallel sessions rebuild parts of the project.
 if (APPLE AND MACOS_BUNDLE)
