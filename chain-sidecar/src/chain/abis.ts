@@ -21,3 +21,11 @@ export const FAUCET_ABI = parseAbi([
     "function dripMon(address[] calldata addrs, uint256[] calldata amts) payable",
     "function owner() view returns (address)",
 ]);
+
+/// `SettlementBatcher.settle(SpendAuth[], bytes[])` — the only function the relayer pool ever
+/// calls on this contract. The struct shape mirrors `OpenRCT2/contracts/src/SettlementBatcher.sol`
+/// 1:1 (same field order; any drift would change the function selector and break submission).
+export const SETTLEMENT_BATCHER_ABI = parseAbi([
+    "struct SpendAuth { address from; uint32 venueId; uint8 category; uint256 amount; uint64 nonce; uint64 deadline; uint64 gameTick; }",
+    "function settle(SpendAuth[] auths, bytes[] sigs)",
+]);

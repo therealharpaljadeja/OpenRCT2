@@ -17,3 +17,10 @@ export {
     type SubmitResult,
     type NoopSubmitterOptions,
 } from "./submitter.js";
+export {
+    createViemSubmitter,
+    DEFAULT_PER_AUTH_GAS,
+    DEFAULT_BASE_GAS,
+    DEFAULT_FEE_CACHE_MS,
+    type ViemSubmitterOptions,
+} from "./viem-submitter.js";

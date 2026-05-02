@@ -18,7 +18,7 @@ import {
     type FaucetWriter,
 } from "./chain/index.js";
 import {Batcher} from "./batcher/index.js";
-import {RelayerPool, createNoopSubmitter} from "./relayers/index.js";
+import {RelayerPool, createNoopSubmitter, createViemSubmitter, type RelayerSubmitter} from "./relayers/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
 /// mnemonic, derives the relayer pool, and waits for SIGINT/SIGTERM. Subsequent milestones
@@ -78,6 +78,7 @@ async function main(): Promise<void> {
     let balances: BalanceReader | undefined;
     let faucet: FaucetWriter | undefined;
     let topup: RelayerTopUp | undefined;
+    let submitter: RelayerSubmitter;
     if (config.rpcUrl) {
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
         balances = createBalanceReader({
@@ -102,13 +103,19 @@ async function main(): Promise<void> {
                 intervalMs: config.topupIntervalMs,
             });
         }
+        // M3.4 — real submitter when we have an RPC. Encodes `settle(...)`, signs locally with
+        // the relayer's HDAccount, submits via Monad's `eth_sendRawTransactionSync` so the
+        // round-trip *is* the submit→confirm latency.
+        submitter = createViemSubmitter({
+            publicClient,
+            settlementBatcher: config.deployments.demoPark.settlementBatcher,
+            log,
+        });
+    } else {
+        // No RPC URL — fall back to the noop submitter so the batcher/pool wiring still
+        // exercises end-to-end (useful in local dev + tests + headless boots).
+        submitter = createNoopSubmitter({log});
     }
-
-    // M3.3 — relayer pool wired as the batcher's sink. Submitter is the noop impl until
-    // M3.4 lands the viem-backed `eth_sendRawTransactionSync` path; the pool itself is
-    // exercised end-to-end (round-robin, nonce tracking, queueing) so M3.4 only swaps the
-    // submitter without any wiring change.
-    const submitter = createNoopSubmitter({log});
     const relayerPoolHandle = new RelayerPool({relayers, submitter, log});
     const batcher = new Batcher({sink: relayerPoolHandle.sink, log});
 
