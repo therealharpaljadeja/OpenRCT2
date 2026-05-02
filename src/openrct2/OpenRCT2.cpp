@@ -27,6 +27,10 @@ bool gOpenRCT2ShowChangelog;
 bool gOpenRCT2SilentBreakpad;
 int32_t gJsonRpcServerPort = 0;
 
+#ifdef OPENRCT2_CHAIN
+bool gOpenRCT2ChainEnabled = false;
+#endif
+
 uint32_t gCurrentDrawCount = 0;
 LegacyScene gLegacyScene;
 uint32_t gScreenAge;

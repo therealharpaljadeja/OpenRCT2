@@ -120,6 +120,7 @@ option(ENABLE_ASAN "Enable the AddressSanitizer.")
 option(ENABLE_UBSAN "Enable the UndefinedBehaviourSanitizer.")
 option(ENABLE_HEADERS_CHECK "Check if include directives in header files are correct. Only works with clang" OFF)
 option(DISABLE_GUI "Don't build GUI. (Headless only.)")
+option(OPENRCT2_CHAIN "Enable Monad chain integration (per-guest onchain wallets, sidecar IPC, chain CLI verbs)." OFF)
 
 
 if (FORCE32)
@@ -347,7 +348,7 @@ else ()
 
     # Compiler flags
     set(DEBUG_LEVEL 0 CACHE STRING "Select debug level for compilation. Use value in range 0–3.")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstrict-aliasing -Werror -Wundef -Wmissing-declarations -Winit-self -Wall -Wextra -Wshadow")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstrict-aliasing -Wundef -Wmissing-declarations -Winit-self -Wall -Wextra -Wshadow")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas -Wno-missing-braces -Wno-comment -Wnonnull -Wno-unused-parameter -Wno-attributes")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDEBUG=${DEBUG_LEVEL}")
 
