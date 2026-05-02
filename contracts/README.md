@@ -2,7 +2,7 @@
 
 Foundry project for the per-guest onchain wallets demo. See `OpenRCT2/ONCHAIN_PLAN.md` for the design.
 
-This milestone (M1.1) is the bare scaffold only. Contracts (`ParkToken`, `Faucet`, `Disperse`, `ParkTreasury`, `LendingPool`, `GuestRegistry`, `VenueRegistry`, `SettlementBatcher`) land in M1.2–M1.4.
+Contracts in `src/`: `ParkToken`, `Faucet`, `Disperse`, `ParkTreasury`, `LendingPool`, `GuestRegistry`, `VenueRegistry`, `SettlementBatcher`. Deploy script in `script/Deploy.s.sol`; the canonical artifact (consumed by sidecar / `rctctl` / indexer) is `deployments/monad-testnet.json`.
 
 ## Setup
 
@@ -25,6 +25,28 @@ forge build
 forge test
 forge fmt
 ```
+
+## Deploy
+
+`script/Deploy.s.sol` deploys the singleton globals (`ParkToken`, `Faucet`, `Disperse`)
+and a default per-park stack (`ParkTreasury`, `LendingPool`, `GuestRegistry`,
+`VenueRegistry`, `SettlementBatcher`) with the wiring from `ONCHAIN_PLAN.md`: `Faucet`
+and `LendingPool` hold the PARK minter role; `LendingPool`'s borrower is the demo
+treasury. It writes all addresses to `deployments/monad-testnet.json`.
+
+```bash
+# Required: DEPLOYER_PRIVATE_KEY in .env, funded with MON.
+# Optional: LOAN_MAX_BORROW, LOAN_RATE_PER_BLOCK override the demo loan params.
+forge script script/Deploy.s.sol:Deploy --rpc-url monad_testnet --broadcast -vvvv
+
+# To verify on Monadscan (Etherscan v2 multichain), set MONAD_EXPLORER_API_KEY in .env
+# and add `--verify`.
+```
+
+The committed `deployments/monad-testnet.json` is the pointer all consumers (sidecar,
+`rctctl`, indexer) read at startup: `{ chainId, deployer, startBlock, globals{},
+demoPark{}, loan{} }`. Re-running the deploy overwrites it — coordinate before
+re-deploying.
 
 ## Network
 

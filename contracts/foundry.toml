@@ -12,6 +12,8 @@ remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
 ]
+# Allow the deploy script to write `deployments/<network>.json`.
+fs_permissions = [{access = "read-write", path = "./deployments"}]
 
 [fmt]
 line_length = 120

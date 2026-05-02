@@ -1,0 +1,21 @@
+{
+  "chainId": 10143,
+  "demoPark": {
+    "guestRegistry": "0x88C453755AE5518D779F52174D768c296D958e2f",
+    "lendingPool": "0x364630E9F91958Bc20FdAa98d5B28824273ac26d",
+    "settlementBatcher": "0x5266392DC0930C134a75E2900Ef1103B64722042",
+    "treasury": "0xf1A95d2689E2949ff128Cb943E9BF564e6f91beD",
+    "venueRegistry": "0xe6Eaaf90380840b2F5F7509138BA330e5EC8B812"
+  },
+  "deployer": "0x74f29100178a388f8cf3872D4d73F65F66fD0386",
+  "globals": {
+    "disperse": "0x3329a07443cd3755BA46364Ef083B64193706A56",
+    "faucet": "0x01Dc4d083268BDE65226C21d2cf0f50CA3214475",
+    "parkToken": "0x7555BE7675C7826657d61adb0b97abf42B80a47F"
+  },
+  "loan": {
+    "maxBorrow": "1000000000000000000000000",
+    "ratePerBlock": 1000000000000
+  },
+  "startBlock": 29174215
+}

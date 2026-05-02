@@ -507,7 +507,7 @@ Park-level loan stays the same — `LendingPool` contract, treasury borrows/repa
 - [x] **1.2** Implement `ParkToken` (with EIP-2612 `permit`), `Faucet`, `Disperse`, `ParkTreasury`, `LendingPool`, `GuestRegistry`.
 - [x] **1.3** Implement `VenueRegistry` (register/rename/remove + CREATE2 sub-account derivation).
 - [x] **1.4** Implement `SettlementBatcher` (EIP-712 `SpendAuth` verify + `transferFrom` per item + `GuestSpend` events). Per-guest sig-nonce mapping.
-- [ ] **1.5** Deploy script + `deployments/monad-testnet.json` (verified on Monad explorer).
+- [x] **1.5** Deploy script + `deployments/monad-testnet.json` (deployed at block 29174215, all 8 contracts verified on Monadscan).
 - [ ] **1.6** Gas-cost benchmark for `settle(N)` for N ∈ {64, 128, 256, 512}; sizes default `BATCH_MAX_SIZE`.
 
 ### M2 — Sidecar core (3–4 days)
