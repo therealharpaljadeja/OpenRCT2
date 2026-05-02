@@ -11,7 +11,9 @@ result to a small relayer pool that submits via Monad's
 
 M2.1 lands the skeleton: TypeScript project, viem dep, line-delimited JSON-RPC
 over a Unix domain socket, and CMake integration with the `agent_bundle`
-target. Subsequent milestones fill in the subsystems under `src/`.
+target. M2.2 lands the encrypted keystore (scrypt + AES-256-GCM) and HD
+derivation of the relayer pool. Subsequent milestones fill in the remaining
+subsystems under `src/`.
 
 ## Layout
 
@@ -24,12 +26,13 @@ chain-sidecar/
 │   ├── config.ts           # CLI args + deployments.json loader
 │   ├── log.ts              # pino logger
 │   ├── ipc/                # UDS JSON-RPC server + handlers
+│   ├── keystore/           # M2.2 — encrypted BIP-39 mnemonic
+│   ├── derive/             # M2.2/2.3 — HD derivation + address cache (cache: M2.3)
 │   ├── outbox/             # M2.4 — drains game events
-│   ├── derive/             # M2.2/2.3 — HD derivation + address cache
 │   ├── funder/             # M3.5/3.6 — Disperse funding + permit collection
 │   ├── venues/             # M3.8 — VenueRegistry mirror
 │   ├── batcher/            # M3.1/3.2 — EIP-712 signing + flush conditions
-│   ├── relayers/           # M3.3/3.4 — relayer pool + sendRawTransactionSync
+│   ├── relayers/           # M3.3/3.4 — relayer pool tx submission
 │   └── metrics/            # M3.9 — tx/s, auth/s, latency, queue depth
 └── test/                   # node:test smoke tests
 ```
@@ -46,11 +49,18 @@ npm ci
 npm run build              # emits dist/main.js
 npm test                   # smoke tests over a temp UDS
 
-# Run against the deployed demo park:
-node dist/main.js \
+# Run against the deployed demo park (creates keystore on first run):
+KEYSTORE_PASSPHRASE='your-passphrase' node dist/main.js \
     --socket /tmp/rct2-sidecar.sock \
-    --deployments ../contracts/deployments/monad-testnet.json
+    --deployments ../contracts/deployments/monad-testnet.json \
+    --keystore /tmp/rct2-park.keystore.json \
+    --relayer-count 8
 ```
+
+The keystore is a scrypt + AES-256-GCM blob written `0o600`. Pass the
+passphrase via `KEYSTORE_PASSPHRASE` (env) or
+`--keystore-passphrase-file <path>` (file). Loss of either passphrase or
+file means the park's master mnemonic is gone — back both up.
 
 `cmake --build build --target agent_bundle` automatically runs `npm ci &&
 npm run build` for this project — see `chain-sidecar/CMakeLists.txt`. If
@@ -63,13 +73,14 @@ The sidecar speaks line-delimited JSON-RPC 2.0. One request per line, one
 response per line. Used by `rctctl chain` and by the in-game terminal
 (proxied via the game's existing `ChainHandlers`).
 
-Methods registered by M2.1:
+Methods registered so far:
 
-| Method            | Purpose                                                |
-| ----------------- | ------------------------------------------------------ |
-| `sidecar.ping`    | Heartbeat. Returns `"pong"`.                           |
-| `sidecar.status`  | Sidecar version, uptime, deployments, registered methods. |
-| `sidecar.shutdown`| Graceful stop. Used by tests / agent_bundle teardown.  |
+| Method             | Purpose                                                              |
+| ------------------ | -------------------------------------------------------------------- |
+| `sidecar.ping`     | Heartbeat. Returns `"pong"`.                                         |
+| `sidecar.status`   | Version, uptime, deployments, keystore summary, registered methods.  |
+| `sidecar.shutdown` | Graceful stop. Used by tests / agent_bundle teardown.                |
+| `keystore.status`  | Keystore path + createdAt + relayer pool addresses (no secrets).     |
 
 Quick check:
 
