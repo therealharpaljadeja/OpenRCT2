@@ -26,6 +26,29 @@ forge test
 forge fmt
 ```
 
+### Gas benchmark
+
+`test/SettlementBatcherGas.t.sol` measures `SettlementBatcher.settle(N)` at
+N ∈ {64, 128, 256, 512} so the sidecar can pick a `BATCH_MAX_SIZE` that fits
+under the Monad block gas budget. Run with `-vvv` to surface the logged numbers:
+
+```bash
+forge test --match-contract SettlementBatcherGas -vvv
+```
+
+Reference numbers (solc 0.8.26, optimizer on, 200 runs):
+
+| N   | total gas  | gas/auth | calldata bytes |
+| --- | ---------- | -------- | -------------- |
+| 64  |  2,732,894 | ~42,701  |  24,708        |
+| 128 |  5,449,102 | ~42,571  |  49,284        |
+| 256 | 10,934,187 | ~42,712  |  98,436        |
+| 512 | 22,115,033 | ~43,193  | 196,740        |
+
+Per-auth cost is essentially flat (~43k gas, ~385 calldata bytes) — confirms
+linear scaling with no quadratic creep. The benchmark also asserts a 64k
+gas/auth ceiling as a regression guard.
+
 ## Deploy
 
 `script/Deploy.s.sol` deploys the singleton globals (`ParkToken`, `Faucet`, `Disperse`)

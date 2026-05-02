@@ -508,7 +508,7 @@ Park-level loan stays the same — `LendingPool` contract, treasury borrows/repa
 - [x] **1.3** Implement `VenueRegistry` (register/rename/remove + CREATE2 sub-account derivation).
 - [x] **1.4** Implement `SettlementBatcher` (EIP-712 `SpendAuth` verify + `transferFrom` per item + `GuestSpend` events). Per-guest sig-nonce mapping.
 - [x] **1.5** Deploy script + `deployments/monad-testnet.json` (deployed at block 29174215, all 8 contracts verified on Monadscan).
-- [ ] **1.6** Gas-cost benchmark for `settle(N)` for N ∈ {64, 128, 256, 512}; sizes default `BATCH_MAX_SIZE`.
+- [x] **1.6** Gas-cost benchmark for `settle(N)` for N ∈ {64, 128, 256, 512}; sizes default `BATCH_MAX_SIZE`. See `contracts/test/SettlementBatcherGas.t.sol` — per-auth gas is flat at ~42.7–43.2k across all N (no quadratic creep), calldata is ~385 B/auth. N=256 settles in ~10.9 M gas; N=512 in ~22.1 M. Default `BATCH_MAX_SIZE = 256` keeps a single batch tx at ~10–15% of a typical 100 M-gas block, leaving headroom for the 8–16-relayer pool to submit in parallel; bump to 512 for stress mode if the block budget allows.
 
 ### M2 — Sidecar core (3–4 days)
 - [ ] **2.1** Node 20 + TypeScript skeleton; viem dep; UDS JSON-RPC server; integrated into `agent_bundle` build (`npm ci && tsc`).
