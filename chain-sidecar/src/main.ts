@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {parseArgs} from "./config.js";
 import {relayerPool} from "./derive/index.js";
+import {GuestAddressCache} from "./derive/cache.js";
 import {RpcServer} from "./ipc/server.js";
 import {registerCoreHandlers, type SidecarRuntime} from "./ipc/handlers.js";
 import {KeystoreError, loadOrCreateKeystoreFile} from "./keystore/index.js";
@@ -49,11 +50,14 @@ async function main(): Promise<void> {
         "relayer pool derived",
     );
 
+    const guestCache = new GuestAddressCache(unlocked.mnemonic);
+
     const runtime: SidecarRuntime = {
         config,
         keystoreCreatedAt: unlocked.createdAt,
         keystoreCreated,
         relayers,
+        guestCache,
     };
 
     const server = new RpcServer(config.socketPath);

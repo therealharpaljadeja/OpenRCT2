@@ -1,5 +1,7 @@
 import type {SidecarConfig} from "../config.js";
 import type {DerivedAccount} from "../derive/index.js";
+import type {GuestAddressCache} from "../derive/cache.js";
+import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
 /// Runtime state needed by the JSON-RPC handlers. Built once at sidecar boot and threaded
@@ -13,6 +15,10 @@ export interface SidecarRuntime {
     /// the in-game UI to nudge the operator to back up the encrypted file the first time.
     keystoreCreated: boolean;
     relayers: readonly DerivedAccount[];
+    /// Guest HD address cache (M2.3). Owns the only in-process reference to the master
+    /// mnemonic outside the keystore module itself; addresses are looked up here so the
+    /// game-facing IPC and the future batcher can share one source of truth.
+    guestCache: GuestAddressCache;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -29,7 +35,13 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         // only thing on disk that can recover those, and it stays at rest.
         relayers: runtime.relayers.map((r, i) => ({index: i, address: r.address, path: r.path})),
         guestPathPrefix: "m/44'/60'/0'/0",
+        guestCache: runtime.guestCache.stats(),
     });
+
+    const guestAddress: Handler = (params) => {
+        const idx = readIndex(params);
+        return {index: idx, address: runtime.guestCache.addressOf(idx)};
+    };
 
     const status: Handler = () => ({
         ok: true,
@@ -64,6 +76,29 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("sidecar.ping", ping);
     server.register("sidecar.shutdown", shutdown);
     server.register("keystore.status", () => keystoreStatus());
+    // Game uses this on `SpawnGuest` to look up the guest's onchain address by HD index
+    // (plan §5.1, §5.3 `GuestEntered`). Cheap after first call thanks to the cache.
+    server.register("guest.address", guestAddress);
+}
+
+/// Pulls a non-negative integer `index` out of either an object-form (`{index: N}`) or a
+/// positional-form (`[N]`) JSON-RPC params payload. Throws an RpcError with InvalidParams
+/// (-32602) so the server reports a clean "bad params" response rather than a generic 500.
+function readIndex(params: unknown): number {
+    let raw: unknown;
+    if (Array.isArray(params)) raw = params[0];
+    else if (params && typeof params === "object" && "index" in params) {
+        raw = (params as {index: unknown}).index;
+    } else {
+        throw new RpcError(ErrorCode.InvalidParams, "guest.address requires { index } or [index]");
+    }
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            `guest.address: index must be a non-negative integer, got ${String(raw)}`,
+        );
+    }
+    return raw;
 }
 
 export interface KeystoreStatus {
@@ -73,6 +108,7 @@ export interface KeystoreStatus {
     relayerCount: number;
     relayers: ReadonlyArray<{index: number; address: `0x${string}`; path: string}>;
     guestPathPrefix: string;
+    guestCache: {size: number; hits: number; misses: number};
 }
 
 /// Bumped manually when the wire protocol or methods change. The status handler exposes it so

@@ -7,7 +7,8 @@ import {join} from "node:path";
 import {RpcServer} from "../src/ipc/server.js";
 import {registerCoreHandlers} from "../src/ipc/handlers.js";
 import {loadDeployments} from "../src/config.js";
-import {relayerPool} from "../src/derive/index.js";
+import {deriveGuest, relayerPool} from "../src/derive/index.js";
+import {GuestAddressCache} from "../src/derive/cache.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -56,6 +57,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>): Promise<T> {
         keystoreCreatedAt: "2026-05-02T00:00:00.000Z",
         keystoreCreated: false,
         relayers,
+        guestCache: new GuestAddressCache(TEST_MNEMONIC),
     });
     await server.listen();
     try {
@@ -168,6 +170,74 @@ test("malformed JSON returns -32700 with id=null", async () => {
         const r = JSON.parse(reply) as RpcResponse;
         assert.equal(r.id, null);
         assert.equal(r.error?.code, -32700);
+    });
+});
+
+test("guest.address returns the cached HD-derived address for a given index", async () => {
+    await withServer(async (sock) => {
+        const expected = deriveGuest(TEST_MNEMONIC, 5).address;
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 30,
+            method: "guest.address",
+            params: {index: 5},
+        });
+        assert.equal(r.error, undefined);
+        assert.deepEqual(r.result, {index: 5, address: expected});
+    });
+});
+
+test("guest.address accepts positional [index] params", async () => {
+    await withServer(async (sock) => {
+        const expected = deriveGuest(TEST_MNEMONIC, 11).address;
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 31,
+            method: "guest.address",
+            params: [11],
+        });
+        assert.deepEqual(r.result, {index: 11, address: expected});
+    });
+});
+
+test("guest.address rejects bad params with InvalidParams (-32602)", async () => {
+    await withServer(async (sock) => {
+        const missing = await callOnce(sock, {jsonrpc: "2.0", id: 40, method: "guest.address"});
+        assert.equal(missing.error?.code, -32602);
+        const negative = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 41,
+            method: "guest.address",
+            params: {index: -1},
+        });
+        assert.equal(negative.error?.code, -32602);
+        const fractional = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 42,
+            method: "guest.address",
+            params: {index: 1.5},
+        });
+        assert.equal(fractional.error?.code, -32602);
+    });
+});
+
+test("keystore.status surfaces guestCache stats that update after guest.address calls", async () => {
+    await withServer(async (sock) => {
+        const before = await callOnce(sock, {jsonrpc: "2.0", id: 50, method: "keystore.status"});
+        assert.deepEqual((before.result as {guestCache: unknown}).guestCache, {
+            size: 0,
+            hits: 0,
+            misses: 0,
+        });
+        await callOnce(sock, {jsonrpc: "2.0", id: 51, method: "guest.address", params: {index: 0}});
+        await callOnce(sock, {jsonrpc: "2.0", id: 52, method: "guest.address", params: {index: 0}});
+        await callOnce(sock, {jsonrpc: "2.0", id: 53, method: "guest.address", params: {index: 1}});
+        const after = await callOnce(sock, {jsonrpc: "2.0", id: 54, method: "keystore.status"});
+        assert.deepEqual((after.result as {guestCache: unknown}).guestCache, {
+            size: 2,
+            hits: 1,
+            misses: 2,
+        });
     });
 });
 
