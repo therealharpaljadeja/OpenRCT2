@@ -11,4 +11,10 @@ export {
     type ParkLaunchOptions,
 } from "./faucet.js";
 export {RelayerTopUp, type RelayerTopUpOptions, type RelayerTopUpStats} from "./topup.js";
-export {PARK_TOKEN_ABI, FAUCET_ABI, SETTLEMENT_BATCHER_ABI} from "./abis.js";
+export {
+    PARK_TOKEN_ABI,
+    FAUCET_ABI,
+    SETTLEMENT_BATCHER_ABI,
+    DISPERSE_ABI,
+    PARK_TREASURY_ABI,
+} from "./abis.js";

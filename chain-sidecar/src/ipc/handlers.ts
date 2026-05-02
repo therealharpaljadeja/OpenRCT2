@@ -6,6 +6,7 @@ import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js"
 import {parkLaunchSetup} from "../chain/index.js";
 import type {Batcher} from "../batcher/index.js";
 import type {RelayerPool} from "../relayers/index.js";
+import type {Funder} from "../funder/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -39,6 +40,10 @@ export interface SidecarRuntime {
     /// Relayer pool (M3.3). The batcher's sink in production. M3.4 swaps the submitter for
     /// the viem-backed `eth_sendRawTransactionSync` impl without changing this wiring.
     relayerPool?: RelayerPool;
+    /// Funder (M3.5). Present together with the chain plumbing — the deployer key drives
+    /// `treasury.execute(disperse, disperseToken(...))` per window. Returns `{enabled: false}`
+    /// over IPC when offline.
+    funder?: Funder;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -148,6 +153,19 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("chain.relayers", () =>
         runtime.relayerPool ? {enabled: true, ...runtime.relayerPool.stats()} : {enabled: false},
     );
+    // M3.5 — funder status. `approvalTx` is the one-time approval the funder posted at boot;
+    // null until `start()` lands (or if the existing allowance was already adequate, in which
+    // case we skipped the approve). Counters mirror Batcher's surface.
+    server.register("chain.funder.status", () => {
+        if (!runtime.funder) return {enabled: false};
+        const s = runtime.funder.stats();
+        return {
+            enabled: true,
+            ...s,
+            // Stringify bigints / hex so the JSON-RPC layer doesn't trip on them.
+            approvalTx: s.approvalTx,
+        };
+    });
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {
             throw new RpcError(ErrorCode.InvalidRequest, "chain.batch.config: batcher not enabled");

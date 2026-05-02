@@ -220,6 +220,13 @@ test("chain.faucet.drip rejects with InvalidRequest when no faucet writer is con
     });
 });
 
+test("chain.funder.status reports {enabled: false} when no funder is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 73, method: "chain.funder.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
 test("outbox.status reports {enabled: false} when no outbox is configured", async () => {
     await withServer(async (sock) => {
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 60, method: "outbox.status"});

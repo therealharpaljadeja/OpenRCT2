@@ -14,6 +14,23 @@ export const PARK_TOKEN_ABI = parseAbi([
     "function balanceOf(address account) view returns (uint256)",
     "function decimals() view returns (uint8)",
     "function totalSupply() view returns (uint256)",
+    "function approve(address spender, uint256 amount) returns (bool)",
+    "function allowance(address owner, address spender) view returns (uint256)",
+]);
+
+/// `Disperse.disperseToken(IERC20, address[], uint256[])` — funder uses this via
+/// `ParkTreasury.execute` to fan PARK out to many guest wallets in one tx.
+export const DISPERSE_ABI = parseAbi([
+    "function disperseToken(address token, address[] addrs, uint256[] amts)",
+    "function disperseEther(address[] addrs, uint256[] amts) payable",
+]);
+
+/// `ParkTreasury.execute` — owner-only wrapper that lets the deployer EOA call any function on
+/// any contract while the treasury appears as `msg.sender`. M3.5's funder uses this to make
+/// the treasury approve Disperse and to drive `disperseToken` off the treasury's PARK balance.
+export const PARK_TREASURY_ABI = parseAbi([
+    "function execute(address target, uint256 value, bytes data) returns (bytes)",
+    "function executeBatch(address[] targets, uint256[] values, bytes[] datas) returns (bytes[])",
 ]);
 
 export const FAUCET_ABI = parseAbi([

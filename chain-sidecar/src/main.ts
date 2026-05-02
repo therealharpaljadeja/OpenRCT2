@@ -19,6 +19,8 @@ import {
 } from "./chain/index.js";
 import {Batcher} from "./batcher/index.js";
 import {RelayerPool, createNoopSubmitter, createViemSubmitter, type RelayerSubmitter} from "./relayers/index.js";
+import {Funder} from "./funder/index.js";
+import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
 /// mnemonic, derives the relayer pool, and waits for SIGINT/SIGTERM. Subsequent milestones
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
     let balances: BalanceReader | undefined;
     let faucet: FaucetWriter | undefined;
     let topup: RelayerTopUp | undefined;
+    let funder: Funder | undefined;
     let submitter: RelayerSubmitter;
     if (config.rpcUrl) {
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
@@ -101,6 +104,19 @@ async function main(): Promise<void> {
                 lowWater: config.monLowWaterWei,
                 target: config.monTargetWei,
                 intervalMs: config.topupIntervalMs,
+            });
+            // M3.5 — funder for entering guests. Same wallet client as the faucet writer
+            // because the deployer key is also the treasury owner.
+            funder = new Funder({
+                walletClient,
+                publicClient,
+                treasury: config.deployments.demoPark.treasury,
+                parkToken: config.deployments.globals.parkToken,
+                disperse: config.deployments.globals.disperse,
+                maxSize: config.funderWindowSize,
+                maxAgeMs: config.funderWindowAgeMs,
+                maxQueuedEntries: config.funderMaxQueued,
+                log,
             });
         }
         // M3.4 — real submitter when we have an RPC. Encodes `settle(...)`, signs locally with
@@ -132,17 +148,59 @@ async function main(): Promise<void> {
     if (balances) runtime.balances = balances;
     if (faucet) runtime.faucet = faucet;
     if (topup) runtime.topup = topup;
+    if (funder) runtime.funder = funder;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
 
     await server.listen();
+    if (funder) {
+        // One-time approval at boot. If this fails, the funder won't accept entries — the
+        // dispatcher below logs but does not crash the sidecar (other subsystems still work).
+        try {
+            await funder.start();
+        } catch (err) {
+            log.error({err}, "funder.start failed; entering guests will not be funded");
+        }
+    }
     if (outboxReader) {
-        // Stub handler until M3 wires the batcher / funder / venue mirror. Logging at debug
-        // because at full throughput this is thousands of lines/sec; the metric counters in
-        // `outboxReader.stats()` are the primary surface in the meantime.
-        await outboxReader.start((event) => {
-            log.debug({event}, "outbox event");
+        // Dispatch by event kind. Each subsystem owns its own kinds; unhandled kinds are
+        // logged at debug level — at full throughput we don't want a noisy line per event,
+        // and the relevant counters live on each subsystem's `stats()`.
+        await outboxReader.start((event: OutboxEvent) => {
+            switch (event.kind) {
+                case "GUEST_ENTRY": {
+                    if (!funder) {
+                        log.debug({event}, "GUEST_ENTRY received but funder disabled");
+                        break;
+                    }
+                    let address: `0x${string}`;
+                    try {
+                        address = guestCache.addressOf(event.hdIndex);
+                    } catch (err) {
+                        log.warn({err, event}, "GUEST_ENTRY: address derivation failed");
+                        break;
+                    }
+                    let amount: bigint;
+                    try {
+                        amount = BigInt(event.cash);
+                    } catch (err) {
+                        log.warn({err, cash: event.cash, event}, "GUEST_ENTRY: invalid cash decimal");
+                        break;
+                    }
+                    funder.accept({address, amount});
+                    break;
+                }
+                // M3.6 (permit), M3.7 (sweep), M3.8 (venue mirror), M3.x (spend) will plug
+                // their own handlers here. Today these branches just log at debug.
+                case "GUEST_SPEND":
+                case "GUEST_EXIT":
+                case "VENUE_REGISTERED":
+                case "VENUE_RENAMED":
+                case "VENUE_REMOVED":
+                    log.debug({event}, "outbox event (no handler yet)");
+                    break;
+            }
         });
     }
     if (topup) topup.start();
@@ -155,6 +213,7 @@ async function main(): Promise<void> {
             outbox: config.outboxPath ?? null,
             rpc: config.rpcUrl ?? null,
             faucetOwner: faucet ? "configured" : null,
+            funder: funder ? "configured" : null,
         },
         "sidecar ready",
     );
@@ -165,6 +224,7 @@ async function main(): Promise<void> {
         // server. Top-up loop is independent of all of them.
         if (topup) await topup.stop().catch((err) => log.error({err}, "topup stop failed"));
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
+        if (funder) await funder.stop().catch((err) => log.error({err}, "funder stop failed"));
         await batcher.stop().catch((err) => log.error({err}, "batcher stop failed"));
         await relayerPoolHandle.stop().catch((err) => log.error({err}, "relayer pool stop failed"));
         await server.close();

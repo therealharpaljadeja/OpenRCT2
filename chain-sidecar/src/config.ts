@@ -12,6 +12,10 @@ const DEFAULT_MON_LOW_WATER_WEI = 10_000_000_000_000_000n; // 0.01 MON
 const DEFAULT_MON_TARGET_WEI = 100_000_000_000_000_000n; // 0.1 MON
 const DEFAULT_PARK_LAUNCH_WEI = 1_000_000n * 10n ** 18n; // 1,000,000 PARK
 const DEFAULT_TOPUP_INTERVAL_MS = 30_000;
+/// Funder window defaults — match plan §4.4 ("every 200 ms ... up to 200 new addresses").
+const DEFAULT_FUNDER_WINDOW_SIZE = 200;
+const DEFAULT_FUNDER_WINDOW_AGE_MS = 200;
+const DEFAULT_FUNDER_MAX_QUEUED = 5_000;
 
 /// Parsed CLI invocation. M2.1 + M2.2 surface — later milestones fill in `--rpc-url`,
 /// `--batch-max-size`, etc.
@@ -42,6 +46,11 @@ export interface SidecarConfig {
     monTargetWei: bigint;
     parkLaunchWei: bigint;
     topupIntervalMs: number;
+    /// M3.5 funder window. Only consulted when chain plumbing + faucet-owner key are present
+    /// (the funder needs a wallet client to drive `treasury.execute`).
+    funderWindowSize: number;
+    funderWindowAgeMs: number;
+    funderMaxQueued: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -61,6 +70,9 @@ Options:
   --mon-target-wei <n>             Relayer MON refill target (default: 0.1 MON)
   --park-launch-wei <n>            PARK to mint into treasury at park launch (default: 1,000,000 PARK)
   --topup-interval-ms <n>          Relayer top-up loop interval in ms (default: 30000)
+  --funder-window-size <n>         Max entries per funding tx (default: 200)
+  --funder-window-age-ms <n>       Max age of buffered entries before flush (default: 200)
+  --funder-max-queued <n>          Drop-oldest cap on the funder buffer (default: 5000)
   -h, --help                       Show this help
 
 Environment:
@@ -84,6 +96,9 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let monTargetWei = DEFAULT_MON_TARGET_WEI;
     let parkLaunchWei = DEFAULT_PARK_LAUNCH_WEI;
     let topupIntervalMs = DEFAULT_TOPUP_INTERVAL_MS;
+    let funderWindowSize = DEFAULT_FUNDER_WINDOW_SIZE;
+    let funderWindowAgeMs = DEFAULT_FUNDER_WINDOW_AGE_MS;
+    let funderMaxQueued = DEFAULT_FUNDER_MAX_QUEUED;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -156,6 +171,33 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 topupIntervalMs = n;
                 break;
             }
+            case "--funder-window-size": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1024) {
+                    throw new Error(`--funder-window-size must be an integer in [1, 1024], got ${String(raw)}`);
+                }
+                funderWindowSize = n;
+                break;
+            }
+            case "--funder-window-age-ms": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 60_000) {
+                    throw new Error(`--funder-window-age-ms must be an integer in [1, 60000], got ${String(raw)}`);
+                }
+                funderWindowAgeMs = n;
+                break;
+            }
+            case "--funder-max-queued": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1_000_000) {
+                    throw new Error(`--funder-max-queued must be an integer in [1, 1000000], got ${String(raw)}`);
+                }
+                funderMaxQueued = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -192,6 +234,9 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         monTargetWei,
         parkLaunchWei,
         topupIntervalMs,
+        funderWindowSize,
+        funderWindowAgeMs,
+        funderMaxQueued,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;
