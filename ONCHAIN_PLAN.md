@@ -503,7 +503,7 @@ Park-level loan stays the same — `LendingPool` contract, treasury borrows/repa
 - [x] **0.4** Add `CHAIN.md` describing the throughput demo intent.
 
 ### M1 — Contracts (3–4 days)
-- [ ] **1.1** Foundry project under `contracts/`.
+- [x] **1.1** Foundry project under `contracts/`.
 - [ ] **1.2** Implement `ParkToken` (with EIP-2612 `permit`), `Faucet`, `Disperse`, `ParkTreasury`, `LendingPool`, `GuestRegistry`.
 - [ ] **1.3** Implement `VenueRegistry` (register/rename/remove + CREATE2 sub-account derivation).
 - [ ] **1.4** Implement `SettlementBatcher` (EIP-712 `SpendAuth` verify + `transferFrom` per item + `GuestSpend` events). Per-guest sig-nonce mapping.

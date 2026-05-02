@@ -1,0 +1,21 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Parent .gitignore has a generic `lib` rule; un-ignore the vendored Foundry deps
+# (forge-std + openzeppelin-contracts) so they ship with the repo.
+!lib/
+!lib/**
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Editors
+.vscode/
+.idea/
+
+# Per-deploy artifacts (we keep deployments/<network>.json checked in)
+broadcast/**/dry-run/
