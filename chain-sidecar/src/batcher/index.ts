@@ -1,9 +1,6 @@
-/// The hot path. Signs each guest spend as an EIP-712 `SpendAuth`, packs into the active batch,
-/// flushes on `BATCH_MAX_SIZE` or `BATCH_MAX_AGE_MS`, and hands flushed batches to the relayer
-/// pool for submission.
-///
-/// M3.1 lands the EIP-712 signer (`sign.ts`); M3.2 will add the batch accumulator + flush
-/// triggers; M3.3 the relayer pool.
+/// The hot path. Signs each guest spend as an EIP-712 `SpendAuth` (M3.1, `sign.ts`), packs
+/// auths into the active batch and flushes on `BATCH_MAX_SIZE` / `BATCH_MAX_AGE_MS` (M3.2,
+/// `batch.ts`). M3.3 plugs the relayer pool in as the batch sink.
 export {
     SPEND_AUTH_DOMAIN_NAME,
     SPEND_AUTH_DOMAIN_VERSION,
@@ -15,3 +12,17 @@ export {
     type SpendAuth,
     type SpendAuthDomain,
 } from "./sign.js";
+export {
+    Batcher,
+    DEFAULT_BATCH_MAX_SIZE,
+    DEFAULT_BATCH_MAX_AGE_MS,
+    DEFAULT_MAX_QUEUED_AUTHS,
+    MAX_BATCH_MAX_SIZE,
+    type Batch,
+    type BatchSink,
+    type BatcherOptions,
+    type BatcherStats,
+    type FlushReason,
+    type SignedAuth,
+    type SinkResult,
+} from "./batch.js";

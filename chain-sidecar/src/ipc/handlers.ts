@@ -4,6 +4,7 @@ import type {GuestAddressCache} from "../derive/cache.js";
 import type {OutboxReader} from "../outbox/index.js";
 import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js";
 import {parkLaunchSetup} from "../chain/index.js";
+import type {Batcher} from "../batcher/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -31,6 +32,9 @@ export interface SidecarRuntime {
     balances?: BalanceReader;
     faucet?: FaucetWriter;
     topup?: RelayerTopUp;
+    /// Batch accumulator (M3.2). Always present; runs idle until M3.5 wires the funder /
+    /// outbox to feed it and M3.3 swaps the no-op sink for the relayer pool.
+    batcher?: Batcher;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -128,6 +132,30 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         path: runtime.config.deploymentsPath,
         deployments: runtime.config.deployments,
     }));
+    // M3.2 — batch accumulator. Read-only `chain.batch.status` plus a write-side
+    // `chain.batch.config` so operators (and `rctctl chain batch config`) can tune the
+    // size/age/queue knobs without restarting the sidecar.
+    server.register("chain.batch.status", () =>
+        runtime.batcher ? {enabled: true, ...runtime.batcher.stats()} : {enabled: false},
+    );
+    server.register("chain.batch.config", (params) => {
+        if (!runtime.batcher) {
+            throw new RpcError(ErrorCode.InvalidRequest, "chain.batch.config: batcher not enabled");
+        }
+        const patch = readBatchConfigPatch(params);
+        if (Object.keys(patch).length === 0) {
+            // Returning current stats on an empty patch makes this a useful "what's the
+            // current config?" probe — operators don't have to remember a separate verb.
+            return {ok: true, ...runtime.batcher.stats()};
+        }
+        try {
+            runtime.batcher.updateConfig(patch);
+        } catch (err) {
+            // Validator throws plain Errors; surface as a clean InvalidParams instead of a 500.
+            throw new RpcError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err));
+        }
+        return {ok: true, ...runtime.batcher.stats()};
+    });
     server.register("chain.faucet.drip", async () => {
         if (!runtime.faucet || !runtime.topup) {
             throw new RpcError(
@@ -171,6 +199,39 @@ function readIndex(params: unknown): number {
         );
     }
     return raw;
+}
+
+/// Pull `{maxSize?, maxAgeMs?, maxQueuedAuths?}` out of the JSON-RPC params. All keys are
+/// optional; unknown keys cause an `InvalidParams` so a typo doesn't silently no-op. We do
+/// the type-narrowing here (rather than in the batcher) so the batcher's `updateConfig` can
+/// throw on semantic violations (range, integer-ness) and we map those to InvalidParams.
+function readBatchConfigPatch(params: unknown): {
+    maxSize?: number;
+    maxAgeMs?: number;
+    maxQueuedAuths?: number;
+} {
+    if (params === undefined || params === null) return {};
+    if (typeof params !== "object" || Array.isArray(params)) {
+        throw new RpcError(ErrorCode.InvalidParams, "chain.batch.config requires a JSON object body");
+    }
+    const obj = params as Record<string, unknown>;
+    const out: {maxSize?: number; maxAgeMs?: number; maxQueuedAuths?: number} = {};
+    const allowed = new Set(["maxSize", "maxAgeMs", "maxQueuedAuths"]);
+    for (const k of Object.keys(obj)) {
+        if (!allowed.has(k)) {
+            throw new RpcError(
+                ErrorCode.InvalidParams,
+                `chain.batch.config: unknown key '${k}' (allowed: ${[...allowed].join(", ")})`,
+            );
+        }
+        const v = obj[k];
+        if (v === undefined) continue;
+        if (typeof v !== "number") {
+            throw new RpcError(ErrorCode.InvalidParams, `chain.batch.config.${k} must be a number`);
+        }
+        out[k as "maxSize" | "maxAgeMs" | "maxQueuedAuths"] = v;
+    }
+    return out;
 }
 
 export interface KeystoreStatus {

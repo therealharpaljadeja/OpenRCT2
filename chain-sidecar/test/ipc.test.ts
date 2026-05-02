@@ -9,6 +9,7 @@ import {registerCoreHandlers} from "../src/ipc/handlers.js";
 import {loadDeployments} from "../src/config.js";
 import {deriveGuest, relayerPool} from "../src/derive/index.js";
 import {GuestAddressCache} from "../src/derive/cache.js";
+import {Batcher, type Batch, type SinkResult} from "../src/batcher/index.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -16,7 +17,11 @@ import {GuestAddressCache} from "../src/derive/cache.js";
 
 const TEST_MNEMONIC = "test test test test test test test test test test test junk";
 
-async function withServer<T>(fn: (sock: string) => Promise<T>): Promise<T> {
+interface WithServerOpts {
+    batcher?: Batcher;
+}
+
+async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerOpts = {}): Promise<T> {
     const dir = await mkdtemp(join(tmpdir(), "rct2-sidecar-test-"));
     const sockPath = join(dir, "sidecar.sock");
     const keystorePath = join(dir, "keystore.json");
@@ -45,7 +50,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>): Promise<T> {
     const deployments = loadDeployments(deploymentsPath);
     const relayers = relayerPool(TEST_MNEMONIC, 4);
     const server = new RpcServer(sockPath);
-    registerCoreHandlers(server, {
+    const runtime: Parameters<typeof registerCoreHandlers>[1] = {
         config: {
             socketPath: sockPath,
             deploymentsPath,
@@ -58,12 +63,15 @@ async function withServer<T>(fn: (sock: string) => Promise<T>): Promise<T> {
         keystoreCreated: false,
         relayers,
         guestCache: new GuestAddressCache(TEST_MNEMONIC),
-    });
+    };
+    if (opts.batcher) runtime.batcher = opts.batcher;
+    registerCoreHandlers(server, runtime);
     await server.listen();
     try {
         return await fn(sockPath);
     } finally {
         await server.close();
+        if (opts.batcher) await opts.batcher.stop();
         await rm(dir, {recursive: true, force: true});
     }
 }
@@ -281,6 +289,116 @@ test("keystore.status surfaces guestCache stats that update after guest.address 
             misses: 2,
         });
     });
+});
+
+test("chain.batch.status reports {enabled: false} when no batcher is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 100, method: "chain.batch.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.batch.status returns enabled + stats when a batcher is wired", async () => {
+    const sink = async (_b: Batch): Promise<SinkResult> => ({});
+    const batcher = new Batcher({sink});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 101, method: "chain.batch.status"});
+            const result = r.result as {enabled: boolean; maxSize: number; maxAgeMs: number; queueDepth: number};
+            assert.equal(result.enabled, true);
+            // Defaults match plan §4.2.
+            assert.equal(result.maxSize, 256);
+            assert.equal(result.maxAgeMs, 200);
+            assert.equal(result.queueDepth, 0);
+        },
+        {batcher},
+    );
+});
+
+test("chain.batch.config rejects without a wired batcher", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 102,
+            method: "chain.batch.config",
+            params: {maxSize: 64},
+        });
+        assert.equal(r.error?.code, -32600);
+        assert.match(r.error?.message ?? "", /batcher not enabled/);
+    });
+});
+
+test("chain.batch.config updates the batcher's tunables and returns fresh stats", async () => {
+    const sink = async (_b: Batch): Promise<SinkResult> => ({});
+    const batcher = new Batcher({sink});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 103,
+                method: "chain.batch.config",
+                params: {maxSize: 128, maxAgeMs: 50},
+            });
+            const result = r.result as {ok: boolean; maxSize: number; maxAgeMs: number};
+            assert.equal(result.ok, true);
+            assert.equal(result.maxSize, 128);
+            assert.equal(result.maxAgeMs, 50);
+            // Confirmed via the source-of-truth (the batcher itself).
+            assert.equal(batcher.stats().maxSize, 128);
+            assert.equal(batcher.stats().maxAgeMs, 50);
+        },
+        {batcher},
+    );
+});
+
+test("chain.batch.config with an empty body returns current stats (probe form)", async () => {
+    const sink = async (_b: Batch): Promise<SinkResult> => ({});
+    const batcher = new Batcher({sink});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 104, method: "chain.batch.config"});
+            const result = r.result as {ok: boolean; maxSize: number};
+            assert.equal(result.ok, true);
+            assert.equal(result.maxSize, 256);
+        },
+        {batcher},
+    );
+});
+
+test("chain.batch.config rejects unknown keys with InvalidParams", async () => {
+    const sink = async (_b: Batch): Promise<SinkResult> => ({});
+    const batcher = new Batcher({sink});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 105,
+                method: "chain.batch.config",
+                params: {bogus: 1},
+            });
+            assert.equal(r.error?.code, -32602);
+            assert.match(r.error?.message ?? "", /unknown key 'bogus'/);
+        },
+        {batcher},
+    );
+});
+
+test("chain.batch.config maps batcher validation errors to InvalidParams", async () => {
+    const sink = async (_b: Batch): Promise<SinkResult> => ({});
+    const batcher = new Batcher({sink});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 106,
+                method: "chain.batch.config",
+                params: {maxSize: 0},
+            });
+            assert.equal(r.error?.code, -32602);
+            assert.match(r.error?.message ?? "", /maxSize/);
+        },
+        {batcher},
+    );
 });
 
 test("handler exception surfaces as -32603 InternalError", async () => {
