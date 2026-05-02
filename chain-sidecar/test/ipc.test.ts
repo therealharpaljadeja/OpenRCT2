@@ -173,6 +173,19 @@ test("malformed JSON returns -32700 with id=null", async () => {
     });
 });
 
+test("chain.deployments returns the parsed deployments + source path", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 80, method: "chain.deployments"});
+        const result = r.result as {path: string; deployments: {chainId: number; demoPark: {settlementBatcher: string}}};
+        assert.match(result.path, /deployments\.json$/);
+        assert.equal(result.deployments.chainId, 10143);
+        assert.equal(
+            result.deployments.demoPark.settlementBatcher,
+            "0x0000000000000000000000000000000000000008",
+        );
+    });
+});
+
 test("chain.balances reports {enabled: false} when no --rpc-url is configured", async () => {
     await withServer(async (sock) => {
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 70, method: "chain.balances"});

@@ -1,6 +1,9 @@
 import {readFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {DEFAULT_RELAYER_COUNT, MAX_RELAYER_COUNT, MIN_RELAYER_COUNT} from "./derive/index.js";
+import {loadDeployments, type Deployments} from "./deployments/index.js";
+
+export {loadDeployments, type Deployments};
 
 /// Defaults for the M2.5 chain plumbing. Per-relayer MON sizes are conservative — Monad
 /// testnet gas should be cheap, but we want headroom across many batch txs without leaning
@@ -9,31 +12,6 @@ const DEFAULT_MON_LOW_WATER_WEI = 10_000_000_000_000_000n; // 0.01 MON
 const DEFAULT_MON_TARGET_WEI = 100_000_000_000_000_000n; // 0.1 MON
 const DEFAULT_PARK_LAUNCH_WEI = 1_000_000n * 10n ** 18n; // 1,000,000 PARK
 const DEFAULT_TOPUP_INTERVAL_MS = 30_000;
-
-/// Mirrors the JSON written by `contracts/script/Deploy.s.sol` to
-/// `OpenRCT2/contracts/deployments/<network>.json`. Game, rctctl, sidecar, and indexer all
-/// read this same artifact so addresses stay in lockstep with the on-chain stack. Plan §2.6.
-export interface Deployments {
-    chainId: number;
-    deployer: `0x${string}`;
-    startBlock: number;
-    globals: {
-        parkToken: `0x${string}`;
-        faucet: `0x${string}`;
-        disperse: `0x${string}`;
-    };
-    demoPark: {
-        treasury: `0x${string}`;
-        lendingPool: `0x${string}`;
-        guestRegistry: `0x${string}`;
-        venueRegistry: `0x${string}`;
-        settlementBatcher: `0x${string}`;
-    };
-    loan: {
-        maxBorrow: string;
-        ratePerBlock: number;
-    };
-}
 
 /// Parsed CLI invocation. M2.1 + M2.2 surface — later milestones fill in `--rpc-url`,
 /// `--batch-max-size`, etc.
@@ -265,13 +243,3 @@ function resolvePassphrase(file: string | undefined): string {
     );
 }
 
-export function loadDeployments(path: string): Deployments {
-    const raw = readFileSync(path, "utf8");
-    const parsed = JSON.parse(raw) as Deployments;
-    if (typeof parsed.chainId !== "number") throw new Error(`${path}: missing chainId`);
-    if (!parsed.globals?.parkToken) throw new Error(`${path}: missing globals.parkToken`);
-    if (!parsed.demoPark?.settlementBatcher) {
-        throw new Error(`${path}: missing demoPark.settlementBatcher`);
-    }
-    return parsed;
-}

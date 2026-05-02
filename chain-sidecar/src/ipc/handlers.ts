@@ -121,6 +121,13 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         const s = runtime.topup.stats();
         return {enabled: true, ...s};
     });
+    // M2.6 — runtime view of `deployments.json`. The sidecar is the single source of truth
+    // at runtime: game, rctctl, indexer all want the addresses, and asking the sidecar
+    // means a future per-park-CREATE2 amendment lands on every consumer at once.
+    server.register("chain.deployments", () => ({
+        path: runtime.config.deploymentsPath,
+        deployments: runtime.config.deployments,
+    }));
     server.register("chain.faucet.drip", async () => {
         if (!runtime.faucet || !runtime.topup) {
             throw new RpcError(
