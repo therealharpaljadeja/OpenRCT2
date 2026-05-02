@@ -133,10 +133,6 @@ The document CODING_AGENT.md contains a high-level architectural overview of our
 
 For work on the `rctctl` CLI be sure to reference and abide by `RCTCTL.md`
 
-## Reminders
-
-Do not use `git` operations outside of logs and diffs. Git is managed independently. Assume that hundreds of changes have been made.
-
 ## In-game Agent Bug Reports
 
 The in-game AI agent can produce bug reports. This helps us iterate more quickly on its concerns and identified issues.
