@@ -5,6 +5,7 @@ import type {OutboxReader} from "../outbox/index.js";
 import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js";
 import {parkLaunchSetup} from "../chain/index.js";
 import type {Batcher} from "../batcher/index.js";
+import type {RelayerPool} from "../relayers/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -35,6 +36,9 @@ export interface SidecarRuntime {
     /// Batch accumulator (M3.2). Always present; runs idle until M3.5 wires the funder /
     /// outbox to feed it and M3.3 swaps the no-op sink for the relayer pool.
     batcher?: Batcher;
+    /// Relayer pool (M3.3). The batcher's sink in production. M3.4 swaps the submitter for
+    /// the viem-backed `eth_sendRawTransactionSync` impl without changing this wiring.
+    relayerPool?: RelayerPool;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -137,6 +141,12 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     // size/age/queue knobs without restarting the sidecar.
     server.register("chain.batch.status", () =>
         runtime.batcher ? {enabled: true, ...runtime.batcher.stats()} : {enabled: false},
+    );
+    // M3.3 — relayer pool stats. Per-relayer nonce / busy / counters / last-tx hash, plus
+    // pool aggregates (busy/free, queued, totals). Drives `rctctl chain relayers` and the
+    // in-game treasury window's relayer-health line.
+    server.register("chain.relayers", () =>
+        runtime.relayerPool ? {enabled: true, ...runtime.relayerPool.stats()} : {enabled: false},
     );
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {

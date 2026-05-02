@@ -10,6 +10,7 @@ import {loadDeployments} from "../src/config.js";
 import {deriveGuest, relayerPool} from "../src/derive/index.js";
 import {GuestAddressCache} from "../src/derive/cache.js";
 import {Batcher, type Batch, type SinkResult} from "../src/batcher/index.js";
+import {RelayerPool, createNoopSubmitter} from "../src/relayers/index.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -19,6 +20,7 @@ const TEST_MNEMONIC = "test test test test test test test test test test test ju
 
 interface WithServerOpts {
     batcher?: Batcher;
+    relayerPool?: RelayerPool;
 }
 
 async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerOpts = {}): Promise<T> {
@@ -65,6 +67,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
         guestCache: new GuestAddressCache(TEST_MNEMONIC),
     };
     if (opts.batcher) runtime.batcher = opts.batcher;
+    if (opts.relayerPool) runtime.relayerPool = opts.relayerPool;
     registerCoreHandlers(server, runtime);
     await server.listen();
     try {
@@ -72,6 +75,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
     } finally {
         await server.close();
         if (opts.batcher) await opts.batcher.stop();
+        if (opts.relayerPool) await opts.relayerPool.stop();
         await rm(dir, {recursive: true, force: true});
     }
 }
@@ -398,6 +402,46 @@ test("chain.batch.config maps batcher validation errors to InvalidParams", async
             assert.match(r.error?.message ?? "", /maxSize/);
         },
         {batcher},
+    );
+});
+
+test("chain.relayers reports {enabled: false} when no pool is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 110, method: "chain.relayers"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.relayers surfaces per-relayer + aggregate stats when wired", async () => {
+    const pool = new RelayerPool({
+        relayers: relayerPool(TEST_MNEMONIC, 3),
+        submitter: createNoopSubmitter(),
+    });
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 111, method: "chain.relayers"});
+            const result = r.result as {
+                enabled: boolean;
+                size: number;
+                free: number;
+                busy: number;
+                queuedBatches: number;
+                relayers: Array<{index: number; address: string; nonce: number | null; busy: boolean}>;
+            };
+            assert.equal(result.enabled, true);
+            assert.equal(result.size, 3);
+            assert.equal(result.busy, 0);
+            assert.equal(result.free, 3);
+            assert.equal(result.queuedBatches, 0);
+            assert.equal(result.relayers.length, 3);
+            // Idle pool — every relayer's nonce is still un-primed (null).
+            for (const rly of result.relayers) {
+                assert.equal(rly.nonce, null);
+                assert.equal(rly.busy, false);
+                assert.match(rly.address, /^0x[0-9a-fA-F]{40}$/);
+            }
+        },
+        {relayerPool: pool},
     );
 });
 

@@ -17,7 +17,8 @@ import {
     type BalanceReader,
     type FaucetWriter,
 } from "./chain/index.js";
-import {Batcher, type Batch, type SinkResult} from "./batcher/index.js";
+import {Batcher} from "./batcher/index.js";
+import {RelayerPool, createNoopSubmitter} from "./relayers/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
 /// mnemonic, derives the relayer pool, and waits for SIGINT/SIGTERM. Subsequent milestones
@@ -103,16 +104,13 @@ async function main(): Promise<void> {
         }
     }
 
-    // M3.2 — boot the batch accumulator with a stub sink that just logs at debug level. M3.3
-    // will replace this with the relayer pool's submit path. Booting it now (rather than
-    // waiting for M3.3) lets `rctctl chain batch status` and `chain.batch.config` come online
-    // immediately, and gives us an end-to-end path for `chain.batch.config` to validate
-    // against without a real producer.
-    const stubSink = async (batch: Batch): Promise<SinkResult> => {
-        log.debug({batchId: batch.id, count: batch.auths.length, reason: batch.reason}, "batch ready (stub sink)");
-        return {};
-    };
-    const batcher = new Batcher({sink: stubSink, log});
+    // M3.3 — relayer pool wired as the batcher's sink. Submitter is the noop impl until
+    // M3.4 lands the viem-backed `eth_sendRawTransactionSync` path; the pool itself is
+    // exercised end-to-end (round-robin, nonce tracking, queueing) so M3.4 only swaps the
+    // submitter without any wiring change.
+    const submitter = createNoopSubmitter({log});
+    const relayerPoolHandle = new RelayerPool({relayers, submitter, log});
+    const batcher = new Batcher({sink: relayerPoolHandle.sink, log});
 
     const runtime: SidecarRuntime = {
         config,
@@ -121,6 +119,7 @@ async function main(): Promise<void> {
         relayers,
         guestCache,
         batcher,
+        relayerPool: relayerPoolHandle,
     };
     if (outboxReader) runtime.outboxReader = outboxReader;
     if (balances) runtime.balances = balances;
@@ -155,11 +154,12 @@ async function main(): Promise<void> {
 
     const shutdown = async (signal: string): Promise<void> => {
         log.info({signal}, "shutting down");
-        // Order: stop the producer (outbox) before the consumer (batcher) so we don't
-        // accept fresh items mid-drain. Top-up loop is independent of either.
+        // Order: outbox (producer) → batcher (sink-driver) → relayer pool (terminal sink) →
+        // server. Top-up loop is independent of all of them.
         if (topup) await topup.stop().catch((err) => log.error({err}, "topup stop failed"));
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         await batcher.stop().catch((err) => log.error({err}, "batcher stop failed"));
+        await relayerPoolHandle.stop().catch((err) => log.error({err}, "relayer pool stop failed"));
         await server.close();
         process.exit(0);
     };
