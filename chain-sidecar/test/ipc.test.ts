@@ -227,6 +227,13 @@ test("chain.funder.status reports {enabled: false} when no funder is wired", asy
     });
 });
 
+test("chain.permits.status reports {enabled: false} when no collector is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 74, method: "chain.permits.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
 test("outbox.status reports {enabled: false} when no outbox is configured", async () => {
     await withServer(async (sock) => {
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 60, method: "outbox.status"});

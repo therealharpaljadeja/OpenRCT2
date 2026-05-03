@@ -7,6 +7,7 @@ import {parkLaunchSetup} from "../chain/index.js";
 import type {Batcher} from "../batcher/index.js";
 import type {RelayerPool} from "../relayers/index.js";
 import type {Funder} from "../funder/index.js";
+import type {PermitCollector} from "../permits/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -44,6 +45,10 @@ export interface SidecarRuntime {
     /// `treasury.execute(disperse, disperseToken(...))` per window. Returns `{enabled: false}`
     /// over IPC when offline.
     funder?: Funder;
+    /// Permit collector (M3.6). Buffers EIP-2612 permit sigs at GUEST_ENTRY and submits them
+    /// in `treasury.executeBatch([parkToken.permit(...)] × N)` calls so the SettlementBatcher
+    /// has unlimited PARK allowance from each guest before the first GUEST_SPEND.
+    permits?: PermitCollector;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -166,6 +171,11 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
             approvalTx: s.approvalTx,
         };
     });
+    // M3.6 — permit collector status. Same shape as the funder: `{enabled: false}` offline,
+    // counters + queue depth + flush-reason histogram online.
+    server.register("chain.permits.status", () =>
+        runtime.permits ? {enabled: true, ...runtime.permits.stats()} : {enabled: false},
+    );
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {
             throw new RpcError(ErrorCode.InvalidRequest, "chain.batch.config: batcher not enabled");

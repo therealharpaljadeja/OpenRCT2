@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {parseArgs} from "./config.js";
-import {relayerPool} from "./derive/index.js";
+import {deriveGuest, relayerPool} from "./derive/index.js";
 import {GuestAddressCache} from "./derive/cache.js";
 import {RpcServer} from "./ipc/server.js";
 import {registerCoreHandlers, type SidecarRuntime} from "./ipc/handlers.js";
@@ -20,6 +20,7 @@ import {
 import {Batcher} from "./batcher/index.js";
 import {RelayerPool, createNoopSubmitter, createViemSubmitter, type RelayerSubmitter} from "./relayers/index.js";
 import {Funder} from "./funder/index.js";
+import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
@@ -81,6 +82,7 @@ async function main(): Promise<void> {
     let faucet: FaucetWriter | undefined;
     let topup: RelayerTopUp | undefined;
     let funder: Funder | undefined;
+    let permits: PermitCollector | undefined;
     let submitter: RelayerSubmitter;
     if (config.rpcUrl) {
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
@@ -118,6 +120,18 @@ async function main(): Promise<void> {
                 maxQueuedEntries: config.funderMaxQueued,
                 log,
             });
+            // M3.6 — permit collector. Same wallet client; the permit txs go through
+            // `treasury.executeBatch([parkToken.permit(...)] × N)` so msg.sender is the
+            // treasury (irrelevant to permit; the sig is what authorizes the approval).
+            permits = new PermitCollector({
+                walletClient,
+                treasury: config.deployments.demoPark.treasury,
+                parkToken: config.deployments.globals.parkToken,
+                maxSize: config.permitsWindowSize,
+                maxAgeMs: config.permitsWindowAgeMs,
+                maxQueuedPermits: config.permitsMaxQueued,
+                log,
+            });
         }
         // M3.4 — real submitter when we have an RPC. Encodes `settle(...)`, signs locally with
         // the relayer's HDAccount, submits via Monad's `eth_sendRawTransactionSync` so the
@@ -149,6 +163,7 @@ async function main(): Promise<void> {
     if (faucet) runtime.faucet = faucet;
     if (topup) runtime.topup = topup;
     if (funder) runtime.funder = funder;
+    if (permits) runtime.permits = permits;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
@@ -167,13 +182,16 @@ async function main(): Promise<void> {
         // Dispatch by event kind. Each subsystem owns its own kinds; unhandled kinds are
         // logged at debug level — at full throughput we don't want a noisy line per event,
         // and the relevant counters live on each subsystem's `stats()`.
-        await outboxReader.start((event: OutboxEvent) => {
+        const permitDom = permits
+            ? permitDomain(config.deployments.chainId, config.deployments.globals.parkToken)
+            : undefined;
+        const batcherAddr = config.deployments.demoPark.settlementBatcher;
+        const permitDeadlineSecs = BigInt(config.permitDeadlineDays) * 86_400n;
+        const permitValue = (1n << 256n) - 1n; // ∞ allowance
+
+        await outboxReader.start(async (event: OutboxEvent) => {
             switch (event.kind) {
                 case "GUEST_ENTRY": {
-                    if (!funder) {
-                        log.debug({event}, "GUEST_ENTRY received but funder disabled");
-                        break;
-                    }
                     let address: `0x${string}`;
                     try {
                         address = guestCache.addressOf(event.hdIndex);
@@ -181,18 +199,39 @@ async function main(): Promise<void> {
                         log.warn({err, event}, "GUEST_ENTRY: address derivation failed");
                         break;
                     }
-                    let amount: bigint;
-                    try {
-                        amount = BigInt(event.cash);
-                    } catch (err) {
-                        log.warn({err, cash: event.cash, event}, "GUEST_ENTRY: invalid cash decimal");
-                        break;
+                    if (funder) {
+                        let amount: bigint;
+                        try {
+                            amount = BigInt(event.cash);
+                        } catch (err) {
+                            log.warn({err, cash: event.cash, event}, "GUEST_ENTRY: invalid cash decimal");
+                            break;
+                        }
+                        funder.accept({address, amount});
                     }
-                    funder.accept({address, amount});
+                    if (permits && permitDom) {
+                        // Sign the permit off-chain. nonce=0 holds for fresh guests, which is
+                        // the only flow we have today; M3.7 sweeper still uses the same
+                        // permit so we never re-permit a guest mid-park.
+                        try {
+                            const guestAccount = deriveGuest(unlocked.mnemonic, event.hdIndex);
+                            const deadline = BigInt(Math.floor(Date.now() / 1000)) + permitDeadlineSecs;
+                            const signed = await signPermit(guestAccount.account, permitDom, {
+                                owner: address,
+                                spender: batcherAddr,
+                                value: permitValue,
+                                nonce: 0n,
+                                deadline,
+                            });
+                            permits.accept(signed);
+                        } catch (err) {
+                            log.warn({err, event}, "GUEST_ENTRY: permit signing failed");
+                        }
+                    }
                     break;
                 }
-                // M3.6 (permit), M3.7 (sweep), M3.8 (venue mirror), M3.x (spend) will plug
-                // their own handlers here. Today these branches just log at debug.
+                // M3.7 (sweep), M3.8 (venue mirror), M3.x (spend) will plug their handlers
+                // here. Today these branches just log at debug.
                 case "GUEST_SPEND":
                 case "GUEST_EXIT":
                 case "VENUE_REGISTERED":
@@ -214,6 +253,7 @@ async function main(): Promise<void> {
             rpc: config.rpcUrl ?? null,
             faucetOwner: faucet ? "configured" : null,
             funder: funder ? "configured" : null,
+            permits: permits ? "configured" : null,
         },
         "sidecar ready",
     );
@@ -225,6 +265,7 @@ async function main(): Promise<void> {
         if (topup) await topup.stop().catch((err) => log.error({err}, "topup stop failed"));
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         if (funder) await funder.stop().catch((err) => log.error({err}, "funder stop failed"));
+        if (permits) await permits.stop().catch((err) => log.error({err}, "permits stop failed"));
         await batcher.stop().catch((err) => log.error({err}, "batcher stop failed"));
         await relayerPoolHandle.stop().catch((err) => log.error({err}, "relayer pool stop failed"));
         await server.close();

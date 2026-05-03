@@ -16,6 +16,15 @@ const DEFAULT_TOPUP_INTERVAL_MS = 30_000;
 const DEFAULT_FUNDER_WINDOW_SIZE = 200;
 const DEFAULT_FUNDER_WINDOW_AGE_MS = 200;
 const DEFAULT_FUNDER_MAX_QUEUED = 5_000;
+/// Permit collector defaults — same cadence as the funder so both windows settle together.
+const DEFAULT_PERMITS_WINDOW_SIZE = 200;
+const DEFAULT_PERMITS_WINDOW_AGE_MS = 200;
+const DEFAULT_PERMITS_MAX_QUEUED = 5_000;
+/// Days from now to use as the permit's `deadline`. Past this point a permit submission
+/// reverts with `ERC2612ExpiredSignature`. The deadline only constrains *submission* — once
+/// permit lands on-chain the allowance is set forever, so we want a generous default. 30 days
+/// is comfortably above any realistic queue-stall scenario.
+const DEFAULT_PERMIT_DEADLINE_DAYS = 30;
 
 /// Parsed CLI invocation. M2.1 + M2.2 surface — later milestones fill in `--rpc-url`,
 /// `--batch-max-size`, etc.
@@ -51,6 +60,11 @@ export interface SidecarConfig {
     funderWindowSize: number;
     funderWindowAgeMs: number;
     funderMaxQueued: number;
+    /// M3.6 permit collector knobs.
+    permitsWindowSize: number;
+    permitsWindowAgeMs: number;
+    permitsMaxQueued: number;
+    permitDeadlineDays: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -73,6 +87,10 @@ Options:
   --funder-window-size <n>         Max entries per funding tx (default: 200)
   --funder-window-age-ms <n>       Max age of buffered entries before flush (default: 200)
   --funder-max-queued <n>          Drop-oldest cap on the funder buffer (default: 5000)
+  --permits-window-size <n>        Max permit sigs per tx (default: 200)
+  --permits-window-age-ms <n>      Max age of buffered permits before flush (default: 200)
+  --permits-max-queued <n>         Drop-oldest cap on the permit buffer (default: 5000)
+  --permit-deadline-days <n>       Days from now to set as permit deadline (default: 30)
   -h, --help                       Show this help
 
 Environment:
@@ -99,6 +117,10 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let funderWindowSize = DEFAULT_FUNDER_WINDOW_SIZE;
     let funderWindowAgeMs = DEFAULT_FUNDER_WINDOW_AGE_MS;
     let funderMaxQueued = DEFAULT_FUNDER_MAX_QUEUED;
+    let permitsWindowSize = DEFAULT_PERMITS_WINDOW_SIZE;
+    let permitsWindowAgeMs = DEFAULT_PERMITS_WINDOW_AGE_MS;
+    let permitsMaxQueued = DEFAULT_PERMITS_MAX_QUEUED;
+    let permitDeadlineDays = DEFAULT_PERMIT_DEADLINE_DAYS;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -198,6 +220,42 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 funderMaxQueued = n;
                 break;
             }
+            case "--permits-window-size": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1024) {
+                    throw new Error(`--permits-window-size must be an integer in [1, 1024], got ${String(raw)}`);
+                }
+                permitsWindowSize = n;
+                break;
+            }
+            case "--permits-window-age-ms": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 60_000) {
+                    throw new Error(`--permits-window-age-ms must be an integer in [1, 60000], got ${String(raw)}`);
+                }
+                permitsWindowAgeMs = n;
+                break;
+            }
+            case "--permits-max-queued": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1_000_000) {
+                    throw new Error(`--permits-max-queued must be an integer in [1, 1000000], got ${String(raw)}`);
+                }
+                permitsMaxQueued = n;
+                break;
+            }
+            case "--permit-deadline-days": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 365) {
+                    throw new Error(`--permit-deadline-days must be an integer in [1, 365], got ${String(raw)}`);
+                }
+                permitDeadlineDays = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -237,6 +295,10 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         funderWindowSize,
         funderWindowAgeMs,
         funderMaxQueued,
+        permitsWindowSize,
+        permitsWindowAgeMs,
+        permitsMaxQueued,
+        permitDeadlineDays,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;
