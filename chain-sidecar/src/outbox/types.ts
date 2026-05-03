@@ -64,9 +64,12 @@ export interface GuestSpendEvent extends BaseEvent {
 }
 
 /// Guest leaves the park (plan §5.2). Sidecar sweeps remaining PARK back to treasury (M3.7).
+/// `hdIndex` is required because the sweeper needs the guest's HDAccount to sign a fresh
+/// permit (entry-time permit is for SettlementBatcher; sweep needs spender=treasury).
 export interface GuestExitEvent extends BaseEvent {
     kind: "GUEST_EXIT";
     guestId: number;
+    hdIndex: number;
 }
 
 /// Ride / shop / stall / facility / entrance placed (plan §3.1, §5.2). Low-volume admin
@@ -135,7 +138,9 @@ export function parseEvent(line: string): ParseResult {
             }
             return {ok: true, event: obj as unknown as GuestSpendEvent};
         case "GUEST_EXIT":
-            if (typeof obj.guestId !== "number") return {ok: false, error: "GUEST_EXIT.guestId missing"};
+            if (typeof obj.guestId !== "number" || typeof obj.hdIndex !== "number") {
+                return {ok: false, error: "GUEST_EXIT missing guestId/hdIndex"};
+            }
             return {ok: true, event: obj as unknown as GuestExitEvent};
         case "VENUE_REGISTERED":
             if (

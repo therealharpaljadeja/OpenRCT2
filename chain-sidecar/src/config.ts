@@ -20,6 +20,10 @@ const DEFAULT_FUNDER_MAX_QUEUED = 5_000;
 const DEFAULT_PERMITS_WINDOW_SIZE = 200;
 const DEFAULT_PERMITS_WINDOW_AGE_MS = 200;
 const DEFAULT_PERMITS_MAX_QUEUED = 5_000;
+/// Sweeper defaults — same cadence; smaller queue cap is fine because exits are sparse.
+const DEFAULT_SWEEPER_WINDOW_SIZE = 200;
+const DEFAULT_SWEEPER_WINDOW_AGE_MS = 200;
+const DEFAULT_SWEEPER_MAX_QUEUED = 5_000;
 /// Days from now to use as the permit's `deadline`. Past this point a permit submission
 /// reverts with `ERC2612ExpiredSignature`. The deadline only constrains *submission* — once
 /// permit lands on-chain the allowance is set forever, so we want a generous default. 30 days
@@ -65,6 +69,10 @@ export interface SidecarConfig {
     permitsWindowAgeMs: number;
     permitsMaxQueued: number;
     permitDeadlineDays: number;
+    /// M3.7 sweeper knobs.
+    sweeperWindowSize: number;
+    sweeperWindowAgeMs: number;
+    sweeperMaxQueued: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -91,6 +99,9 @@ Options:
   --permits-window-age-ms <n>      Max age of buffered permits before flush (default: 200)
   --permits-max-queued <n>         Drop-oldest cap on the permit buffer (default: 5000)
   --permit-deadline-days <n>       Days from now to set as permit deadline (default: 30)
+  --sweeper-window-size <n>        Max exits per sweep tx (default: 200)
+  --sweeper-window-age-ms <n>      Max age of buffered exits before flush (default: 200)
+  --sweeper-max-queued <n>         Drop-oldest cap on the sweeper buffer (default: 5000)
   -h, --help                       Show this help
 
 Environment:
@@ -121,6 +132,9 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let permitsWindowAgeMs = DEFAULT_PERMITS_WINDOW_AGE_MS;
     let permitsMaxQueued = DEFAULT_PERMITS_MAX_QUEUED;
     let permitDeadlineDays = DEFAULT_PERMIT_DEADLINE_DAYS;
+    let sweeperWindowSize = DEFAULT_SWEEPER_WINDOW_SIZE;
+    let sweeperWindowAgeMs = DEFAULT_SWEEPER_WINDOW_AGE_MS;
+    let sweeperMaxQueued = DEFAULT_SWEEPER_MAX_QUEUED;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -256,6 +270,33 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 permitDeadlineDays = n;
                 break;
             }
+            case "--sweeper-window-size": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1024) {
+                    throw new Error(`--sweeper-window-size must be an integer in [1, 1024], got ${String(raw)}`);
+                }
+                sweeperWindowSize = n;
+                break;
+            }
+            case "--sweeper-window-age-ms": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 60_000) {
+                    throw new Error(`--sweeper-window-age-ms must be an integer in [1, 60000], got ${String(raw)}`);
+                }
+                sweeperWindowAgeMs = n;
+                break;
+            }
+            case "--sweeper-max-queued": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1_000_000) {
+                    throw new Error(`--sweeper-max-queued must be an integer in [1, 1000000], got ${String(raw)}`);
+                }
+                sweeperMaxQueued = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -299,6 +340,9 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         permitsWindowAgeMs,
         permitsMaxQueued,
         permitDeadlineDays,
+        sweeperWindowSize,
+        sweeperWindowAgeMs,
+        sweeperMaxQueued,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;

@@ -21,6 +21,7 @@ import {Batcher} from "./batcher/index.js";
 import {RelayerPool, createNoopSubmitter, createViemSubmitter, type RelayerSubmitter} from "./relayers/index.js";
 import {Funder} from "./funder/index.js";
 import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
+import {Sweeper} from "./sweeper/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
     let topup: RelayerTopUp | undefined;
     let funder: Funder | undefined;
     let permits: PermitCollector | undefined;
+    let sweeper: Sweeper | undefined;
     let submitter: RelayerSubmitter;
     if (config.rpcUrl) {
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
@@ -132,6 +134,22 @@ async function main(): Promise<void> {
                 maxQueuedPermits: config.permitsMaxQueued,
                 log,
             });
+            // M3.7 — sweeper. On GUEST_EXIT, signs a fresh permit with spender=treasury (entry-
+            // time permit went to SettlementBatcher; no sweep entrypoint there) and submits
+            // [permit, transferFrom] pairs through `treasury.executeBatch`. Same wallet client.
+            sweeper = new Sweeper({
+                walletClient,
+                publicClient,
+                treasury: config.deployments.demoPark.treasury,
+                parkToken: config.deployments.globals.parkToken,
+                permitDomain: permitDomain(config.deployments.chainId, config.deployments.globals.parkToken),
+                deriveAccount: (idx) => deriveGuest(unlocked.mnemonic, idx).account,
+                permitDeadlineDays: config.permitDeadlineDays,
+                maxSize: config.sweeperWindowSize,
+                maxAgeMs: config.sweeperWindowAgeMs,
+                maxQueuedExits: config.sweeperMaxQueued,
+                log,
+            });
         }
         // M3.4 — real submitter when we have an RPC. Encodes `settle(...)`, signs locally with
         // the relayer's HDAccount, submits via Monad's `eth_sendRawTransactionSync` so the
@@ -164,6 +182,7 @@ async function main(): Promise<void> {
     if (topup) runtime.topup = topup;
     if (funder) runtime.funder = funder;
     if (permits) runtime.permits = permits;
+    if (sweeper) runtime.sweeper = sweeper;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
@@ -210,9 +229,10 @@ async function main(): Promise<void> {
                         funder.accept({address, amount});
                     }
                     if (permits && permitDom) {
-                        // Sign the permit off-chain. nonce=0 holds for fresh guests, which is
-                        // the only flow we have today; M3.7 sweeper still uses the same
-                        // permit so we never re-permit a guest mid-park.
+                        // Sign the permit off-chain. nonce=0 holds for fresh guests; M3.7's
+                        // sweeper signs a *separate* permit at exit (with spender=treasury)
+                        // because the entry-time permit went to SettlementBatcher and the
+                        // deployed batcher has no sweep entrypoint.
                         try {
                             const guestAccount = deriveGuest(unlocked.mnemonic, event.hdIndex);
                             const deadline = BigInt(Math.floor(Date.now() / 1000)) + permitDeadlineSecs;
@@ -230,10 +250,24 @@ async function main(): Promise<void> {
                     }
                     break;
                 }
-                // M3.7 (sweep), M3.8 (venue mirror), M3.x (spend) will plug their handlers
-                // here. Today these branches just log at debug.
+                case "GUEST_EXIT": {
+                    if (!sweeper) {
+                        log.debug({event}, "GUEST_EXIT (sweeper not configured)");
+                        break;
+                    }
+                    let address: `0x${string}`;
+                    try {
+                        address = guestCache.addressOf(event.hdIndex);
+                    } catch (err) {
+                        log.warn({err, event}, "GUEST_EXIT: address derivation failed");
+                        break;
+                    }
+                    sweeper.accept({hdIndex: event.hdIndex, address});
+                    break;
+                }
+                // M3.8 (venue mirror), M3.x (spend) will plug their handlers here. Today these
+                // branches just log at debug.
                 case "GUEST_SPEND":
-                case "GUEST_EXIT":
                 case "VENUE_REGISTERED":
                 case "VENUE_RENAMED":
                 case "VENUE_REMOVED":
@@ -254,6 +288,7 @@ async function main(): Promise<void> {
             faucetOwner: faucet ? "configured" : null,
             funder: funder ? "configured" : null,
             permits: permits ? "configured" : null,
+            sweeper: sweeper ? "configured" : null,
         },
         "sidecar ready",
     );
@@ -266,6 +301,7 @@ async function main(): Promise<void> {
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         if (funder) await funder.stop().catch((err) => log.error({err}, "funder stop failed"));
         if (permits) await permits.stop().catch((err) => log.error({err}, "permits stop failed"));
+        if (sweeper) await sweeper.stop().catch((err) => log.error({err}, "sweeper stop failed"));
         await batcher.stop().catch((err) => log.error({err}, "batcher stop failed"));
         await relayerPoolHandle.stop().catch((err) => log.error({err}, "relayer pool stop failed"));
         await server.close();

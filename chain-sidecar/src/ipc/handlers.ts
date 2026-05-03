@@ -8,6 +8,7 @@ import type {Batcher} from "../batcher/index.js";
 import type {RelayerPool} from "../relayers/index.js";
 import type {Funder} from "../funder/index.js";
 import type {PermitCollector} from "../permits/index.js";
+import type {Sweeper} from "../sweeper/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -49,6 +50,10 @@ export interface SidecarRuntime {
     /// in `treasury.executeBatch([parkToken.permit(...)] × N)` calls so the SettlementBatcher
     /// has unlimited PARK allowance from each guest before the first GUEST_SPEND.
     permits?: PermitCollector;
+    /// Sweeper (M3.7). Buffers `GUEST_EXIT` events and returns each guest's residual PARK
+    /// balance to the treasury via batched `[permit, transferFrom]` pairs. Returns
+    /// `{enabled: false}` over IPC when offline.
+    sweeper?: Sweeper;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -175,6 +180,11 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     // counters + queue depth + flush-reason histogram online.
     server.register("chain.permits.status", () =>
         runtime.permits ? {enabled: true, ...runtime.permits.stats()} : {enabled: false},
+    );
+    // M3.7 — sweeper status. Same shape, with two extra counters (`zeroBalanceExits` so a
+    // park full of broke guests doesn't look like a stalled sweeper).
+    server.register("chain.sweeper.status", () =>
+        runtime.sweeper ? {enabled: true, ...runtime.sweeper.stats()} : {enabled: false},
     );
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {

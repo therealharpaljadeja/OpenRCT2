@@ -40,7 +40,7 @@ test("parseEvent accepts every kind", () => {
     const cases: OutboxEvent[] = [
         {seq: 0, ts: 1, kind: "GUEST_ENTRY", guestId: 1, hdIndex: 0, cash: "1000"},
         {seq: 1, ts: 2, kind: "GUEST_SPEND", guestId: 1, venueId: 7, amount: "12", category: 1, gameTick: 5000},
-        {seq: 2, ts: 3, kind: "GUEST_EXIT", guestId: 1},
+        {seq: 2, ts: 3, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1},
         {seq: 3, ts: 4, kind: "VENUE_REGISTERED", venueId: 7, venueKind: 1, name: "Coaster", objectType: "rct2.ride.wmouse"},
         {seq: 4, ts: 5, kind: "VENUE_RENAMED", venueId: 7, newName: "New Name"},
         {seq: 5, ts: 6, kind: "VENUE_REMOVED", venueId: 7},
@@ -134,9 +134,9 @@ test("OutboxWriter assigns monotonic seq starting at 0", async () => {
     try {
         const w = new OutboxWriter(join(dir, "out.wal"));
         await w.open();
-        const a = await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1});
-        const b = await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2});
-        const c = await w.append({ts: 3, kind: "GUEST_EXIT", guestId: 3});
+        const a = await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        const b = await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2});
+        const c = await w.append({ts: 3, kind: "GUEST_EXIT", guestId: 3, hdIndex: 3});
         await w.close();
         assert.equal(a, 0);
         assert.equal(b, 1);
@@ -152,13 +152,13 @@ test("OutboxWriter resumes seq after reopen on existing WAL", async () => {
         const path = join(dir, "out.wal");
         const w1 = new OutboxWriter(path);
         await w1.open();
-        await w1.append({ts: 1, kind: "GUEST_EXIT", guestId: 1});
-        await w1.append({ts: 2, kind: "GUEST_EXIT", guestId: 2});
+        await w1.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        await w1.append({ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2});
         await w1.close();
 
         const w2 = new OutboxWriter(path);
         await w2.open();
-        const seq = await w2.append({ts: 3, kind: "GUEST_EXIT", guestId: 3});
+        const seq = await w2.append({ts: 3, kind: "GUEST_EXIT", guestId: 3, hdIndex: 3});
         await w2.close();
         assert.equal(seq, 2, "next seq should pick up where seq=1 left off");
     } finally {
@@ -199,7 +199,7 @@ test("OutboxReader drains existing events into the handler", async () => {
         const w = new OutboxWriter(wal);
         await w.open();
         for (let i = 0; i < 5; i++) {
-            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i});
+            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
         }
         await w.close();
 
@@ -235,14 +235,14 @@ test("OutboxReader sees events appended after start (live tail)", async () => {
         const w = new OutboxWriter(wal);
         await w.open();
         for (let i = 0; i < 3; i++) {
-            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i});
+            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
         }
         await w.close();
         await waitFor(() => seen.length === 3);
 
         const w2 = new OutboxWriter(wal);
         await w2.open();
-        await w2.append({ts: 99, kind: "GUEST_EXIT", guestId: 99});
+        await w2.append({ts: 99, kind: "GUEST_EXIT", guestId: 99, hdIndex: 99});
         await w2.close();
         await waitFor(() => seen.length === 4);
 
@@ -261,7 +261,7 @@ test("OutboxReader resumes from cursor across stop/start", async () => {
         const cursor = join(dir, "out.cursor");
         const w = new OutboxWriter(wal);
         await w.open();
-        for (let i = 0; i < 4; i++) await w.append({ts: i, kind: "GUEST_EXIT", guestId: i});
+        for (let i = 0; i < 4; i++) await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
         await w.close();
 
         const first: OutboxEvent[] = [];
@@ -275,8 +275,8 @@ test("OutboxReader resumes from cursor across stop/start", async () => {
         // Append 2 more events after first reader has stopped + persisted cursor.
         const w2 = new OutboxWriter(wal);
         await w2.open();
-        await w2.append({ts: 100, kind: "GUEST_EXIT", guestId: 100});
-        await w2.append({ts: 101, kind: "GUEST_EXIT", guestId: 101});
+        await w2.append({ts: 100, kind: "GUEST_EXIT", guestId: 100, hdIndex: 100});
+        await w2.append({ts: 101, kind: "GUEST_EXIT", guestId: 101, hdIndex: 101});
         await w2.close();
 
         const second: OutboxEvent[] = [];
@@ -303,8 +303,8 @@ test("OutboxReader does not advance cursor past a failing handler", async () => 
         const cursor = join(dir, "out.cursor");
         const w = new OutboxWriter(wal);
         await w.open();
-        await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1});
-        await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2});
+        await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2});
         await w.close();
 
         // Handler throws on seq=1 a few times before letting it through.
@@ -342,9 +342,9 @@ test("OutboxReader skips malformed lines and bumps parseErrors counter", async (
         await writeFile(
             wal,
             [
-                JSON.stringify({seq: 0, ts: 1, kind: "GUEST_EXIT", guestId: 1}),
+                JSON.stringify({seq: 0, ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1}),
                 "this is garbage",
-                JSON.stringify({seq: 1, ts: 2, kind: "GUEST_EXIT", guestId: 2}),
+                JSON.stringify({seq: 1, ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2}),
             ].join("\n") + "\n",
         );
 
@@ -371,8 +371,8 @@ test("OutboxReader handles partial trailing line (writer mid-write)", async () =
         const wal = join(dir, "out.wal");
         const cursor = join(dir, "out.cursor");
         // Write event 0 fully + the prefix of event 1 (no trailing newline).
-        const goodLine = JSON.stringify({seq: 0, ts: 1, kind: "GUEST_EXIT", guestId: 1}) + "\n";
-        const partial = '{"seq":1,"ts":2,"kind":"GUEST_EXIT","guestId":';
+        const goodLine = JSON.stringify({seq: 0, ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1}) + "\n";
+        const partial = '{"seq":1,"ts":2,"kind":"GUEST_EXIT","guestId":2,"hdIndex":';
         await writeFile(wal, goodLine + partial);
 
         const seen: OutboxEvent[] = [];
@@ -399,8 +399,8 @@ test("OutboxReader cursor reflects total bytes consumed", async () => {
         const cursor = join(dir, "out.cursor");
         const w = new OutboxWriter(wal);
         await w.open();
-        await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1});
-        await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2});
+        await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        await w.append({ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2});
         await w.close();
 
         const expectedSize = (await stat(wal)).size;
@@ -449,7 +449,7 @@ test("OutboxReader recovers when WAL shrinks below cursor (rotation)", async () 
         const cursor = join(dir, "out.cursor");
         const w = new OutboxWriter(wal);
         await w.open();
-        for (let i = 0; i < 3; i++) await w.append({ts: i, kind: "GUEST_EXIT", guestId: i});
+        for (let i = 0; i < 3; i++) await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
         await w.close();
 
         const seen: OutboxEvent[] = [];
@@ -460,7 +460,7 @@ test("OutboxReader recovers when WAL shrinks below cursor (rotation)", async () 
         await waitFor(() => seen.length === 3);
 
         // Simulate rotation: replace the WAL with a fresh, smaller one.
-        await writeFile(wal, JSON.stringify({seq: 0, ts: 100, kind: "GUEST_EXIT", guestId: 99}) + "\n");
+        await writeFile(wal, JSON.stringify({seq: 0, ts: 100, kind: "GUEST_EXIT", guestId: 99, hdIndex: 99}) + "\n");
         await waitFor(() => seen.length === 4, 3000);
         await reader.stop();
         assert.equal((seen[3] as {guestId: number}).guestId, 99);

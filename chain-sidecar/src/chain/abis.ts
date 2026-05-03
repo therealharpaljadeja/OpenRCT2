@@ -18,6 +18,8 @@ export const PARK_TOKEN_ABI = parseAbi([
     "function allowance(address owner, address spender) view returns (uint256)",
     "function nonces(address owner) view returns (uint256)",
     "function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)",
+    "function transfer(address to, uint256 amount) returns (bool)",
+    "function transferFrom(address from, address to, uint256 amount) returns (bool)",
 ]);
 
 /// `Disperse.disperseToken(IERC20, address[], uint256[])` — funder uses this via
