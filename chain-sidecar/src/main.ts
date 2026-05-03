@@ -24,6 +24,7 @@ import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import {Sweeper} from "./sweeper/index.js";
 import {VenueMirror} from "./venues/index.js";
 import {MetricsAggregator} from "./metrics/index.js";
+import {SpendRateLimiter} from "./ratelimit/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
@@ -184,6 +185,13 @@ async function main(): Promise<void> {
     const metrics = new MetricsAggregator({log});
     const relayerPoolHandle = new RelayerPool({relayers, submitter, metrics, log});
     const batcher = new Batcher({sink: relayerPoolHandle.sink, log});
+    // M3.10 — per-guest spend rate cap. Always wired (no chain dependency); the GUEST_SPEND
+    // dispatcher consults `consume(hdIndex)` and drops over-limit events with a counter
+    // bump so a runaway guest can't dominate the batch (plan §10).
+    const rateLimiter = new SpendRateLimiter({
+        maxAuthPerSecond: config.rateLimitPerGuestAuthPerSec,
+        log,
+    });
 
     const runtime: SidecarRuntime = {
         config,
@@ -194,6 +202,7 @@ async function main(): Promise<void> {
         batcher,
         relayerPool: relayerPoolHandle,
         metrics,
+        rateLimiter,
     };
     if (outboxReader) runtime.outboxReader = outboxReader;
     if (balances) runtime.balances = balances;
@@ -282,6 +291,9 @@ async function main(): Promise<void> {
                     break;
                 }
                 case "GUEST_EXIT": {
+                    // Drop the rate-limit bucket for this guest so the map doesn't grow
+                    // unbounded across park sessions (plan §10 / M3.10). Idempotent + cheap.
+                    rateLimiter.forget(event.hdIndex);
                     if (!sweeper) {
                         log.debug({event}, "GUEST_EXIT (sweeper not configured)");
                         break;
@@ -323,10 +335,22 @@ async function main(): Promise<void> {
                         log.debug({event}, "VENUE_REMOVED (mirror not configured)");
                     }
                     break;
-                // M3.x (spend) will plug its handler here. Today this branch just logs.
-                case "GUEST_SPEND":
+                case "GUEST_SPEND": {
+                    // M3.10 — drop over-rate spends *at the dispatcher*, before any signing
+                    // work is queued. A runaway guest stops contributing to the batch, but
+                    // honest spend keeps flowing. The full sign-and-push path lands in a
+                    // future M3.x; until then this is the only thing keeping the bucket
+                    // map honest, so it has to live here.
+                    if (!rateLimiter.consume(event.hdIndex)) {
+                        log.warn(
+                            {hdIndex: event.hdIndex, guestId: event.guestId, venueId: event.venueId},
+                            "GUEST_SPEND rate-limited (over per-guest cap) — dropping",
+                        );
+                        break;
+                    }
                     log.debug({event}, "GUEST_SPEND (batcher dispatcher not yet wired)");
                     break;
+                }
             }
         });
     }

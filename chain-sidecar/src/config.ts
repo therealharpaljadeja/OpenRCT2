@@ -2,6 +2,8 @@ import {readFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {DEFAULT_RELAYER_COUNT, MAX_RELAYER_COUNT, MIN_RELAYER_COUNT} from "./derive/index.js";
 import {loadDeployments, type Deployments} from "./deployments/index.js";
+import {DEFAULT_PER_GUEST_AUTH_PER_SEC, MAX_PER_GUEST_AUTH_PER_SEC} from "./ratelimit/index.js";
+import {DEFAULT_MAX_BYTES, MAX_MAX_BYTES} from "./outbox/index.js";
 
 export {loadDeployments, type Deployments};
 
@@ -77,6 +79,13 @@ export interface SidecarConfig {
     sweeperMaxQueued: number;
     /// M3.8 venue mirror knobs.
     venueMirrorMaxQueued: number;
+    /// M3.10 per-guest spend rate cap (auth/sec/guest). Plan §10. Drops over-limit spends
+    /// at the dispatcher and bumps a counter; protects the batcher from a single runaway
+    /// guest dominating the queue.
+    rateLimitPerGuestAuthPerSec: number;
+    /// M3.10 outbox WAL byte cap. The (test) producer rotates by truncating when the next
+    /// append would push past this; the reader detects the shrink and resets. Plan §10.
+    outboxMaxBytes: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -107,6 +116,8 @@ Options:
   --sweeper-window-age-ms <n>      Max age of buffered exits before flush (default: 200)
   --sweeper-max-queued <n>         Drop-oldest cap on the sweeper buffer (default: 5000)
   --venue-mirror-max-queued <n>    Drop-oldest cap on the venue mirror queue (default: 1024)
+  --rate-limit-per-guest <n>       Per-guest spend cap, auth/sec/guest (default: ${DEFAULT_PER_GUEST_AUTH_PER_SEC})
+  --outbox-max-bytes <n>           WAL byte cap before the writer truncates (default: ${DEFAULT_MAX_BYTES})
   -h, --help                       Show this help
 
 Environment:
@@ -141,6 +152,8 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let sweeperWindowAgeMs = DEFAULT_SWEEPER_WINDOW_AGE_MS;
     let sweeperMaxQueued = DEFAULT_SWEEPER_MAX_QUEUED;
     let venueMirrorMaxQueued = DEFAULT_VENUE_MIRROR_MAX_QUEUED;
+    let rateLimitPerGuestAuthPerSec = DEFAULT_PER_GUEST_AUTH_PER_SEC;
+    let outboxMaxBytes = DEFAULT_MAX_BYTES;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -314,6 +327,28 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 venueMirrorMaxQueued = n;
                 break;
             }
+            case "--rate-limit-per-guest": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isFinite(n) || n <= 0 || n > MAX_PER_GUEST_AUTH_PER_SEC) {
+                    throw new Error(
+                        `--rate-limit-per-guest must be in (0, ${MAX_PER_GUEST_AUTH_PER_SEC}], got ${String(raw)}`,
+                    );
+                }
+                rateLimitPerGuestAuthPerSec = n;
+                break;
+            }
+            case "--outbox-max-bytes": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1024 || n > MAX_MAX_BYTES) {
+                    throw new Error(
+                        `--outbox-max-bytes must be an integer in [1024, ${MAX_MAX_BYTES}], got ${String(raw)}`,
+                    );
+                }
+                outboxMaxBytes = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -361,6 +396,8 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         sweeperWindowAgeMs,
         sweeperMaxQueued,
         venueMirrorMaxQueued,
+        rateLimitPerGuestAuthPerSec,
+        outboxMaxBytes,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;

@@ -13,6 +13,12 @@ export type {
     ParseResult,
 } from "./types.js";
 export {parseEvent, serializeEvent} from "./types.js";
-export {OutboxWriter} from "./wal.js";
+export {
+    OutboxWriter,
+    DEFAULT_MAX_BYTES,
+    MAX_MAX_BYTES,
+    type OutboxWriterOptions,
+    type OutboxWriterStats,
+} from "./wal.js";
 export {OutboxReader, type OutboxReaderOptions, type OutboxReaderStats, type EventHandler} from "./reader.js";
 export {loadCursor, saveCursor, ZERO_CURSOR, type Cursor} from "./cursor.js";

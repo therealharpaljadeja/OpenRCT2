@@ -12,6 +12,7 @@ import {GuestAddressCache} from "../src/derive/cache.js";
 import {Batcher, type Batch, type SinkResult} from "../src/batcher/index.js";
 import {RelayerPool, createNoopSubmitter} from "../src/relayers/index.js";
 import {MetricsAggregator} from "../src/metrics/index.js";
+import {SpendRateLimiter} from "../src/ratelimit/index.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -23,6 +24,7 @@ interface WithServerOpts {
     batcher?: Batcher;
     relayerPool?: RelayerPool;
     metrics?: MetricsAggregator;
+    rateLimiter?: SpendRateLimiter;
 }
 
 async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerOpts = {}): Promise<T> {
@@ -71,6 +73,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
     if (opts.batcher) runtime.batcher = opts.batcher;
     if (opts.relayerPool) runtime.relayerPool = opts.relayerPool;
     if (opts.metrics) runtime.metrics = opts.metrics;
+    if (opts.rateLimiter) runtime.rateLimiter = opts.rateLimiter;
     registerCoreHandlers(server, runtime);
     await server.listen();
     try {
@@ -293,6 +296,114 @@ test("chain.venues.* reports {enabled: false} when no venue mirror is wired", as
         });
         assert.deepEqual(get.result, {enabled: false});
     });
+});
+
+test("chain.ratelimit.status reports {enabled: false} when no rate limiter is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 90, method: "chain.ratelimit.status"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.ratelimit.status surfaces accepted/rejected/guestsTracked when wired", async () => {
+    const rateLimiter = new SpendRateLimiter({maxAuthPerSecond: 3});
+    rateLimiter.consume(1);
+    rateLimiter.consume(1);
+    rateLimiter.consume(1);
+    rateLimiter.consume(1); // rejected
+    rateLimiter.consume(2); // accepted (separate bucket)
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 91, method: "chain.ratelimit.status"});
+            const result = r.result as {
+                enabled: boolean;
+                maxAuthPerSecond: number;
+                accepted: number;
+                rejected: number;
+                guestsTracked: number;
+            };
+            assert.equal(result.enabled, true);
+            assert.equal(result.maxAuthPerSecond, 3);
+            assert.equal(result.accepted, 4);
+            assert.equal(result.rejected, 1);
+            assert.equal(result.guestsTracked, 2);
+        },
+        {rateLimiter},
+    );
+});
+
+test("chain.ratelimit.config probe-form returns current stats", async () => {
+    const rateLimiter = new SpendRateLimiter({maxAuthPerSecond: 5});
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 92, method: "chain.ratelimit.config"});
+            const result = r.result as {ok: boolean; maxAuthPerSecond: number};
+            assert.equal(result.ok, true);
+            assert.equal(result.maxAuthPerSecond, 5);
+        },
+        {rateLimiter},
+    );
+});
+
+test("chain.ratelimit.config updates the cap and rejects unknown keys + bad values", async () => {
+    const rateLimiter = new SpendRateLimiter({maxAuthPerSecond: 5});
+    await withServer(
+        async (sock) => {
+            const ok = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 93,
+                method: "chain.ratelimit.config",
+                params: {maxAuthPerSecond: 12},
+            });
+            assert.equal((ok.result as {ok: boolean; maxAuthPerSecond: number}).maxAuthPerSecond, 12);
+
+            const unknown = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 94,
+                method: "chain.ratelimit.config",
+                params: {bogus: 1},
+            });
+            assert.equal(unknown.error?.code, -32602);
+            assert.match(unknown.error?.message ?? "", /unknown key 'bogus'/);
+
+            const negative = await callOnce(sock, {
+                jsonrpc: "2.0",
+                id: 95,
+                method: "chain.ratelimit.config",
+                params: {maxAuthPerSecond: -1},
+            });
+            assert.equal(negative.error?.code, -32602);
+        },
+        {rateLimiter},
+    );
+});
+
+test("chain.ratelimit.config rejects with InvalidRequest when no rate limiter is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 96,
+            method: "chain.ratelimit.config",
+            params: {maxAuthPerSecond: 10},
+        });
+        assert.equal(r.error?.code, -32600);
+    });
+});
+
+test("chain.throughput.drops.rateLimitedSpends mirrors the rate limiter's rejected count", async () => {
+    const metrics = new MetricsAggregator();
+    const rateLimiter = new SpendRateLimiter({maxAuthPerSecond: 1});
+    rateLimiter.consume(7);
+    rateLimiter.consume(7); // rejected
+    rateLimiter.consume(7); // rejected
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 97, method: "chain.throughput"});
+            const drops = (r.result as {drops: {rateLimitedSpends: number}}).drops;
+            assert.equal(drops.rateLimitedSpends, 2);
+        },
+        {metrics, rateLimiter},
+    );
 });
 
 test("outbox.status reports {enabled: false} when no outbox is configured", async () => {

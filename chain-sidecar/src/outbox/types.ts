@@ -53,6 +53,10 @@ export interface GuestEntryEvent extends BaseEvent {
 export interface GuestSpendEvent extends BaseEvent {
     kind: "GUEST_SPEND";
     guestId: number;
+    /// HD derivation index. The future spend signer (M3.x) needs it to derive the guest's
+    /// EIP-712 signing key on the hot path; the M3.10 rate limiter keys per-guest buckets
+    /// off it as well so `forget(hdIndex)` on GUEST_EXIT lines up.
+    hdIndex: number;
     venueId: number;
     /// Decimal string (PARK is 18-decimals; values can exceed JS number precision).
     amount: string;
@@ -129,6 +133,7 @@ export function parseEvent(line: string): ParseResult {
         case "GUEST_SPEND":
             if (
                 typeof obj.guestId !== "number" ||
+                typeof obj.hdIndex !== "number" ||
                 typeof obj.venueId !== "number" ||
                 typeof obj.amount !== "string" ||
                 typeof obj.category !== "number" ||

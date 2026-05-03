@@ -4,6 +4,8 @@ import {appendFile, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promis
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {
+    DEFAULT_MAX_BYTES,
+    MAX_MAX_BYTES,
     OutboxReader,
     OutboxWriter,
     parseEvent,
@@ -39,7 +41,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000, intervalMs = 
 test("parseEvent accepts every kind", () => {
     const cases: OutboxEvent[] = [
         {seq: 0, ts: 1, kind: "GUEST_ENTRY", guestId: 1, hdIndex: 0, cash: "1000"},
-        {seq: 1, ts: 2, kind: "GUEST_SPEND", guestId: 1, venueId: 7, amount: "12", category: 1, gameTick: 5000},
+        {seq: 1, ts: 2, kind: "GUEST_SPEND", guestId: 1, hdIndex: 0, venueId: 7, amount: "12", category: 1, gameTick: 5000},
         {seq: 2, ts: 3, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1},
         {seq: 3, ts: 4, kind: "VENUE_REGISTERED", venueId: 7, venueKind: 1, name: "Coaster", objectType: "rct2.ride.wmouse"},
         {seq: 4, ts: 5, kind: "VENUE_RENAMED", venueId: 7, newName: "New Name"},
@@ -75,6 +77,7 @@ test("serializeEvent + parseEvent round-trip", () => {
         ts: 1714668000000,
         kind: "GUEST_SPEND",
         guestId: 42,
+        hdIndex: 42,
         venueId: 8,
         amount: "1234567890123456789",
         category: 2,
@@ -173,7 +176,7 @@ test("OutboxWriter produces NDJSON parseable line-by-line", async () => {
         const w = new OutboxWriter(path);
         await w.open();
         await w.append({ts: 1, kind: "GUEST_ENTRY", guestId: 1, hdIndex: 0, cash: "100"});
-        await w.append({ts: 2, kind: "GUEST_SPEND", guestId: 1, venueId: 5, amount: "10", category: 0, gameTick: 1});
+        await w.append({ts: 2, kind: "GUEST_SPEND", guestId: 1, hdIndex: 0, venueId: 5, amount: "10", category: 0, gameTick: 1});
         await w.close();
         const raw = await readFile(path, "utf8");
         const lines = raw.split("\n").filter((l) => l.length > 0);
@@ -464,6 +467,226 @@ test("OutboxReader recovers when WAL shrinks below cursor (rotation)", async () 
         await waitFor(() => seen.length === 4, 3000);
         await reader.stop();
         assert.equal((seen[3] as {guestId: number}).guestId, 99);
+    } finally {
+        await cleanup();
+    }
+});
+
+// ----------------------------------------------------------------------------
+// wal.ts — M3.10 size cap + rotation
+// ----------------------------------------------------------------------------
+
+test("OutboxWriter default maxBytes is 500 MiB (plan §10)", () => {
+    assert.equal(DEFAULT_MAX_BYTES, 500 * 1024 * 1024);
+});
+
+test("OutboxWriter constructor rejects out-of-range maxBytes", () => {
+    assert.throws(() => new OutboxWriter("/tmp/x", {maxBytes: 0}));
+    assert.throws(() => new OutboxWriter("/tmp/x", {maxBytes: -1}));
+    assert.throws(() => new OutboxWriter("/tmp/x", {maxBytes: 1.5}));
+    assert.throws(() => new OutboxWriter("/tmp/x", {maxBytes: 1023})); // below 1KiB floor
+    assert.throws(() => new OutboxWriter("/tmp/x", {maxBytes: MAX_MAX_BYTES + 1}));
+});
+
+test("OutboxWriter currentSize tracks bytes written + survives reopen", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const path = join(dir, "out.wal");
+        const w1 = new OutboxWriter(path);
+        await w1.open();
+        await w1.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        await w1.append({ts: 2, kind: "GUEST_EXIT", guestId: 2, hdIndex: 2});
+        const sizeBeforeClose = w1.currentSize();
+        await w1.close();
+        // On-disk size must match the writer's tracked size.
+        const st = await stat(path);
+        assert.equal(st.size, sizeBeforeClose);
+        // Reopening picks up the existing on-disk size so the next append's cap-check is
+        // grounded in reality rather than starting from 0 and undershooting the cap.
+        const w2 = new OutboxWriter(path);
+        await w2.open();
+        assert.equal(w2.currentSize(), sizeBeforeClose);
+        await w2.close();
+    } finally {
+        await cleanup();
+    }
+});
+
+test("OutboxWriter rotates when next append would exceed maxBytes", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const path = join(dir, "out.wal");
+        // One serialized GUEST_EXIT line is ~70 bytes; pick a tiny cap so we hit it fast.
+        const w = new OutboxWriter(path, {maxBytes: 1024});
+        await w.open();
+        for (let i = 0; i < 50; i++) {
+            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
+        }
+        await w.close();
+        const stats = w.stats();
+        // Must have rotated at least once given 50 × ~70 byte lines into a 1 KB cap.
+        assert.ok(stats.rotations >= 1, `expected at least 1 rotation, got ${stats.rotations}`);
+        // currentSize after the loop must be at-or-below the cap.
+        assert.ok(stats.currentSize <= 1024);
+        // appendCount counts every append regardless of rotation.
+        assert.equal(stats.appendCount, 50);
+        // Seq is monotonic across rotations — last assigned was 49.
+        assert.equal(stats.nextSeq, 50);
+        // On-disk file size matches the writer's tracked currentSize.
+        const st = await stat(path);
+        assert.equal(st.size, stats.currentSize);
+    } finally {
+        await cleanup();
+    }
+});
+
+test("OutboxWriter rotation preserves seq monotonicity (no reset to 0)", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const path = join(dir, "out.wal");
+        const w = new OutboxWriter(path, {maxBytes: 1024});
+        await w.open();
+        let lastSeq = -1;
+        for (let i = 0; i < 100; i++) {
+            const seq = await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
+            assert.equal(seq, lastSeq + 1, "seq must be strictly monotonic across rotations");
+            lastSeq = seq;
+        }
+        // At least one rotation should have happened — but seq sequence stayed clean.
+        assert.ok(w.rotations() >= 1);
+        await w.close();
+    } finally {
+        await cleanup();
+    }
+});
+
+test("OutboxWriter post-rotation file starts with the triggering event", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const path = join(dir, "out.wal");
+        // 1 KiB cap. GUEST_EXIT lines are ~70 bytes; ~14 fit before a rotation. Write
+        // enough events to force at least one rotation, then verify the file's structure.
+        const w = new OutboxWriter(path, {maxBytes: 1024});
+        await w.open();
+        let firstSeqAfterRotation = -1;
+        const seenSeqsBeforeFirstRotation: number[] = [];
+        for (let i = 0; i < 30; i++) {
+            const seq = await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
+            if (firstSeqAfterRotation === -1 && w.rotations() >= 1) {
+                // The first append that landed *post-rotation* — i.e. that triggered the
+                // rotation. Its seq should be the first seq in the on-disk file.
+                firstSeqAfterRotation = seq;
+            }
+            if (firstSeqAfterRotation === -1) seenSeqsBeforeFirstRotation.push(seq);
+        }
+        assert.ok(w.rotations() >= 1, "expected at least one rotation");
+        await w.close();
+        const raw = await readFile(path, "utf8");
+        const lines = raw.split("\n").filter((l) => l.length > 0);
+        // Every surviving line must parse cleanly.
+        for (const line of lines) {
+            const r = parseEvent(line);
+            assert.ok(r.ok, `surviving line failed to parse: ${line}`);
+        }
+        // First seq in the post-rotation file *must* be the seq that triggered the most
+        // recent rotation — implementation guarantees rotation fires before the triggering
+        // event is written, so the new file starts with that line.
+        const firstParsed = parseEvent(lines[0]!);
+        assert.ok(firstParsed.ok);
+        if (firstParsed.ok) {
+            // We can't promise it's the *first* rotation's trigger seq (multiple rotations
+            // may have happened), but it must be a seq that comes from the rotation chain
+            // — i.e. ≥ firstSeqAfterRotation (the first seq that ever landed post-rotation)
+            // and not one of the pre-rotation seqs.
+            assert.ok(
+                firstParsed.event.seq >= firstSeqAfterRotation,
+                `expected first surviving seq ≥ ${firstSeqAfterRotation}, got ${firstParsed.event.seq}`,
+            );
+            assert.ok(
+                !seenSeqsBeforeFirstRotation.includes(firstParsed.event.seq),
+                "first surviving seq must not be one of the pre-first-rotation seqs",
+            );
+        }
+    } finally {
+        await cleanup();
+    }
+});
+
+test("OutboxReader replays cleanly across a writer-driven rotation (M3.10 end-to-end)", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const wal = join(dir, "out.wal");
+        const cursor = join(dir, "out.cursor");
+
+        // Reader subscribes first; then the writer pushes events past its size cap so a
+        // rotation happens mid-stream. Reader must:
+        //   1. Receive every event up to the rotation.
+        //   2. Detect the shrink + reset to offset 0.
+        //   3. Receive every event written after the rotation.
+        const seen: OutboxEvent[] = [];
+        const reader = new OutboxReader({
+            walPath: wal,
+            cursorPath: cursor,
+            pollIntervalMs: 5,
+            persistEveryN: 1,
+        });
+        await reader.start((e) => {
+            seen.push(e);
+        });
+
+        const w = new OutboxWriter(wal, {maxBytes: 1024});
+        await w.open();
+        for (let i = 0; i < 60; i++) {
+            await w.append({ts: i, kind: "GUEST_EXIT", guestId: i, hdIndex: i});
+            // Small pause so the reader has a chance to drain in between writes — the
+            // failure mode we're guarding against is "rotation happens before reader has
+            // even seen the first event", which would still pass but doesn't actually test
+            // the live-rotation path.
+            if (i % 10 === 9) await sleep(20);
+        }
+        const rotations = w.rotations();
+        await w.close();
+
+        // We can't promise the reader saw every byte (rotation drops events past the cap by
+        // design), but we can promise:
+        //   - The reader saw at least the events that survived the final rotation.
+        //   - The reader stays running and processes new events post-rotation.
+        await sleep(100); // let the reader drain final tail
+        await reader.stop();
+
+        assert.ok(rotations >= 1, `expected at least one writer-driven rotation, got ${rotations}`);
+        // The last event's `guestId` must be in the seen set — that's the strict guarantee.
+        const lastSeenGuestId = (seen[seen.length - 1] as {guestId: number}).guestId;
+        assert.equal(lastSeenGuestId, 59, "reader must have processed the final post-rotation event");
+        // Cursor must have advanced past 0 (reader successfully replayed post-rotation
+        // events) and reflect the post-rotation file size.
+        const persistedCursor = await loadCursor(cursor);
+        const finalSize = (await stat(wal)).size;
+        assert.equal(
+            persistedCursor.offset,
+            finalSize,
+            "cursor should equal post-rotation file size after a clean drain",
+        );
+    } finally {
+        await cleanup();
+    }
+});
+
+test("OutboxWriter.stats() exposes the full surface", async () => {
+    const {dir, cleanup} = await tmpDir();
+    try {
+        const path = join(dir, "out.wal");
+        const w = new OutboxWriter(path, {maxBytes: 65536});
+        await w.open();
+        await w.append({ts: 1, kind: "GUEST_EXIT", guestId: 1, hdIndex: 1});
+        const s = w.stats();
+        assert.equal(s.path, path);
+        assert.equal(s.appendCount, 1);
+        assert.equal(s.nextSeq, 1);
+        assert.equal(s.maxBytes, 65536);
+        assert.equal(s.rotations, 0);
+        assert.ok(s.currentSize > 0);
+        await w.close();
     } finally {
         await cleanup();
     }

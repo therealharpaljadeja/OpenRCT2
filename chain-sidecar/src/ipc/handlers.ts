@@ -11,6 +11,7 @@ import type {PermitCollector} from "../permits/index.js";
 import type {Sweeper} from "../sweeper/index.js";
 import type {VenueMirror} from "../venues/index.js";
 import type {MetricsAggregator} from "../metrics/index.js";
+import type {SpendRateLimiter} from "../ratelimit/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -64,6 +65,9 @@ export interface SidecarRuntime {
     /// pumps tx/auth events into it so `chain.throughput` returns live rolling-window rates
     /// + latency percentiles.
     metrics?: MetricsAggregator;
+    /// Per-guest spend rate limiter (M3.10). Always present; the GUEST_SPEND dispatcher
+    /// consults it before any signing work and drops over-cap spends with a counter bump.
+    rateLimiter?: SpendRateLimiter;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -228,6 +232,7 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         const permitStats = runtime.permits?.stats();
         const sweeperStats = runtime.sweeper?.stats();
         const venueStats = runtime.venueMirror?.stats();
+        const rateStats = runtime.rateLimiter?.stats();
         return {
             enabled: true,
             now: snap.now,
@@ -267,6 +272,9 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
                 permits: permitStats?.droppedPermits ?? 0,
                 sweeperExits: sweeperStats?.droppedExits ?? 0,
                 venueEvents: venueStats?.droppedEvents ?? 0,
+                /// Spends rejected by the M3.10 per-guest rate limiter — pre-batcher drops.
+                /// A non-zero counter signals one or more runaway guests at the cap.
+                rateLimitedSpends: rateStats?.rejected ?? 0,
             },
             errors: {
                 /// Per-subsystem error counters. Each is incremented on a failed RPC /
@@ -307,6 +315,27 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
             throw new RpcError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err));
         }
         return {ok: true, ...runtime.batcher.stats()};
+    });
+    // M3.10 — per-guest spend rate cap. Always-on (no chain dependency).
+    server.register("chain.ratelimit.status", () =>
+        runtime.rateLimiter ? {enabled: true, ...runtime.rateLimiter.stats()} : {enabled: false},
+    );
+    server.register("chain.ratelimit.config", (params) => {
+        if (!runtime.rateLimiter) {
+            throw new RpcError(ErrorCode.InvalidRequest, "chain.ratelimit.config: rate limiter not enabled");
+        }
+        const next = readRateLimitPatch(params);
+        if (next === undefined) {
+            // Empty / probe form — return current stats so operators don't need a separate
+            // verb to "what's the current cap?".
+            return {ok: true, ...runtime.rateLimiter.stats()};
+        }
+        try {
+            runtime.rateLimiter.updateConfig(next);
+        } catch (err) {
+            throw new RpcError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err));
+        }
+        return {ok: true, ...runtime.rateLimiter.stats()};
     });
     server.register("chain.faucet.drip", async () => {
         if (!runtime.faucet || !runtime.topup) {
@@ -402,6 +431,30 @@ function readBatchConfigPatch(params: unknown): {
         out[k as "maxSize" | "maxAgeMs" | "maxQueuedAuths"] = v;
     }
     return out;
+}
+
+/// Pull `{maxAuthPerSecond?}` out of the JSON-RPC params. Empty body → undefined (probe).
+/// Unknown keys → InvalidParams (typo doesn't silently no-op).
+function readRateLimitPatch(params: unknown): number | undefined {
+    if (params === undefined || params === null) return undefined;
+    if (typeof params !== "object" || Array.isArray(params)) {
+        throw new RpcError(ErrorCode.InvalidParams, "chain.ratelimit.config requires a JSON object body");
+    }
+    const obj = params as Record<string, unknown>;
+    const allowed = new Set(["maxAuthPerSecond"]);
+    for (const k of Object.keys(obj)) {
+        if (!allowed.has(k)) {
+            throw new RpcError(
+                ErrorCode.InvalidParams,
+                `chain.ratelimit.config: unknown key '${k}' (allowed: ${[...allowed].join(", ")})`,
+            );
+        }
+    }
+    if (obj.maxAuthPerSecond === undefined) return undefined;
+    if (typeof obj.maxAuthPerSecond !== "number") {
+        throw new RpcError(ErrorCode.InvalidParams, "chain.ratelimit.config.maxAuthPerSecond must be a number");
+    }
+    return obj.maxAuthPerSecond;
 }
 
 export interface KeystoreStatus {
