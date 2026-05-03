@@ -23,6 +23,7 @@ import {Funder} from "./funder/index.js";
 import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import {Sweeper} from "./sweeper/index.js";
 import {VenueMirror} from "./venues/index.js";
+import {MetricsAggregator} from "./metrics/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
@@ -177,7 +178,11 @@ async function main(): Promise<void> {
         // exercises end-to-end (useful in local dev + tests + headless boots).
         submitter = createNoopSubmitter({log});
     }
-    const relayerPoolHandle = new RelayerPool({relayers, submitter, log});
+    // M3.9 — metrics aggregator. Always-on (no chain dependency); the relayer pool calls
+    // `metrics.recordTx*` on each submit so the rolling-window rates / percentiles are live
+    // even before any subsystem-specific gauges are wired into the snapshot.
+    const metrics = new MetricsAggregator({log});
+    const relayerPoolHandle = new RelayerPool({relayers, submitter, metrics, log});
     const batcher = new Batcher({sink: relayerPoolHandle.sink, log});
 
     const runtime: SidecarRuntime = {
@@ -188,6 +193,7 @@ async function main(): Promise<void> {
         guestCache,
         batcher,
         relayerPool: relayerPoolHandle,
+        metrics,
     };
     if (outboxReader) runtime.outboxReader = outboxReader;
     if (balances) runtime.balances = balances;

@@ -1,4 +1,11 @@
-/// Tracks `tx/s`, `auth/s`, p50/p95/p99 submit→confirm latency, batch-fill, queue depth,
-/// dropped auths, and per-relayer pending-nonce / busy state. Surfaced over JSON-RPC for
-/// rctctl + the in-game Treasury window. Lands in M3.9.
-export {};
+/// MetricsAggregator (plan §4.6 / M3.9). Pulls submit→confirm events from the relayer pool,
+/// keeps timestamped samples for rate + percentile computation over a rolling window, and
+/// exposes a snapshot the IPC layer joins with subsystem gauges to render `chain.throughput`.
+export {
+    MetricsAggregator,
+    DEFAULT_METRICS_WINDOW_MS,
+    DEFAULT_MAX_LATENCY_SAMPLES,
+    type MetricsRecorder,
+    type MetricsAggregatorOptions,
+    type ThroughputSnapshot,
+} from "./aggregator.js";

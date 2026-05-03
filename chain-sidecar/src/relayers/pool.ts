@@ -2,6 +2,7 @@ import type {HDAccount} from "viem/accounts";
 import type {Batch, BatchSink, SinkResult} from "../batcher/index.js";
 import type {DerivedAccount} from "../derive/index.js";
 import {log as defaultLog, type Logger} from "../log.js";
+import type {MetricsRecorder} from "../metrics/index.js";
 import {isNonceError, type RelayerSubmitter} from "./submitter.js";
 
 /// Relayer pool (plan §4.3 / M3.3).
@@ -44,6 +45,11 @@ export interface RelayerPoolOptions {
     /// the pool / batch size (plan §4.3). Default 64; rough heuristic of "enough headroom
     /// for a couple of round-trip latencies × N relayers".
     maxQueuedBatches?: number;
+    /// Optional M3.9 sink for tx/auth events. When present, the pool calls
+    /// `metrics.recordTxSuccess(authCount, latencyMs)` after each successful submit and
+    /// `metrics.recordTxFailure()` on the final failure (after the one-shot nonce-refresh
+    /// retry). Absent in unit tests that only care about the round-robin / nonce semantics.
+    metrics?: MetricsRecorder;
     log?: Logger;
 }
 
@@ -88,6 +94,7 @@ export class RelayerPool {
     readonly #submitter: RelayerSubmitter;
     readonly #log: Logger;
     readonly #maxQueuedBatches: number;
+    readonly #metrics: MetricsRecorder | undefined;
 
     /// Round-robin starting cursor. Only consulted when at least one relayer is free; if all
     /// are busy we go via the waiter queue instead.
@@ -104,6 +111,7 @@ export class RelayerPool {
         this.#submitter = opts.submitter;
         this.#log = (opts.log ?? defaultLog).child({mod: "relayer-pool"});
         this.#maxQueuedBatches = opts.maxQueuedBatches ?? DEFAULT_MAX_QUEUED_BATCHES;
+        this.#metrics = opts.metrics;
         if (!Number.isInteger(this.#maxQueuedBatches) || this.#maxQueuedBatches < 0) {
             throw new Error(`maxQueuedBatches must be a non-negative integer, got ${this.#maxQueuedBatches}`);
         }
@@ -251,6 +259,7 @@ export class RelayerPool {
                 r.submitted++;
                 r.lastLatencyMs = result.latencyMs;
                 r.lastTxHash = result.txHash;
+                this.#metrics?.recordTxSuccess(batch.auths.length, result.latencyMs);
                 return {txHash: result.txHash};
             } catch (err) {
                 r.errors++;
@@ -268,6 +277,7 @@ export class RelayerPool {
                     {relayer: r.address, batchId: batch.id, attempt, err},
                     "relayer submit failed; surfacing to batcher",
                 );
+                this.#metrics?.recordTxFailure();
                 throw err;
             }
         }

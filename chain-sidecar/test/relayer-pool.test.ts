@@ -104,7 +104,12 @@ function makeMockSubmitter(): MockSubmitter {
     return submitter;
 }
 
-function setupPool(opts: {n: number; submitter: RelayerSubmitter; maxQueuedBatches?: number}): {
+function setupPool(opts: {
+    n: number;
+    submitter: RelayerSubmitter;
+    maxQueuedBatches?: number;
+    metrics?: import("../src/metrics/index.js").MetricsRecorder;
+}): {
     pool: RelayerPool;
     relayers: DerivedAccount[];
 } {
@@ -113,6 +118,7 @@ function setupPool(opts: {n: number; submitter: RelayerSubmitter; maxQueuedBatch
         relayers,
         submitter: opts.submitter,
         ...(opts.maxQueuedBatches !== undefined ? {maxQueuedBatches: opts.maxQueuedBatches} : {}),
+        ...(opts.metrics !== undefined ? {metrics: opts.metrics} : {}),
     });
     return {pool, relayers};
 }
@@ -370,4 +376,84 @@ test("pool sink shape matches BatchSink (assignable to {sink: BatchSink})", asyn
     // And a runtime use of it via the same signature the batcher will use.
     const result = await pool.sink(fakeBatch());
     assert.match(result.txHash ?? "", /^0x[0-9a-f]{64}$/);
+});
+
+test("M3.9 metrics: successful submit calls recordTxSuccess with authCount + latency", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const successCalls: Array<{authCount: number; latencyMs: number}> = [];
+    let failureCalls = 0;
+    const recorder = {
+        recordTxSuccess: (authCount: number, latencyMs: number): void => {
+            successCalls.push({authCount, latencyMs});
+        },
+        recordTxFailure: (): void => {
+            failureCalls++;
+        },
+        recordDroppedAuths: (): void => undefined,
+    };
+    const {pool} = setupPool({n: 1, submitter, metrics: recorder});
+    const p = pool.sink(fakeBatch(50));
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.resolveOldest({latencyMs: 123});
+    await p;
+    assert.equal(successCalls.length, 1);
+    assert.equal(successCalls[0]!.authCount, 50);
+    assert.equal(successCalls[0]!.latencyMs, 123);
+    assert.equal(failureCalls, 0);
+});
+
+test("M3.9 metrics: failed submit (non-nonce) calls recordTxFailure once", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const recorder = {
+        successes: 0,
+        failures: 0,
+        recordTxSuccess(): void {
+            this.successes++;
+        },
+        recordTxFailure(): void {
+            this.failures++;
+        },
+        recordDroppedAuths(): void {
+            // unused
+        },
+    };
+    const {pool} = setupPool({n: 1, submitter, metrics: recorder});
+    const p = pool.sink(fakeBatch(10));
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("execution reverted: BadSignature");
+    await assert.rejects(p);
+    assert.equal(recorder.successes, 0);
+    assert.equal(recorder.failures, 1);
+});
+
+test("M3.9 metrics: nonce error retry path doesn't double-count success", async () => {
+    // The nonce-refresh retry should produce ONE recordTxSuccess if the retry succeeds, not
+    // one per attempt. Otherwise auth/s would inflate on flaky chains.
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const recorder = {
+        successes: 0,
+        failures: 0,
+        recordTxSuccess(): void {
+            this.successes++;
+        },
+        recordTxFailure(): void {
+            this.failures++;
+        },
+        recordDroppedAuths(): void {
+            // unused
+        },
+    };
+    const {pool} = setupPool({n: 1, submitter, metrics: recorder});
+    const p = pool.sink(fakeBatch(20));
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    // First attempt errors with a nonce error → pool refreshes nonce + retries.
+    submitter.rejectOldest("nonce too low");
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.resolveOldest({latencyMs: 50});
+    await p;
+    assert.equal(recorder.successes, 1, "exactly one success record across the retry");
+    assert.equal(recorder.failures, 0, "nonce error shouldn't surface as a final failure");
 });

@@ -10,6 +10,7 @@ import type {Funder} from "../funder/index.js";
 import type {PermitCollector} from "../permits/index.js";
 import type {Sweeper} from "../sweeper/index.js";
 import type {VenueMirror} from "../venues/index.js";
+import type {MetricsAggregator} from "../metrics/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -59,6 +60,10 @@ export interface SidecarRuntime {
     /// locally so the spend batcher can resolve `venueId → kind / subAccount` without a
     /// chain read on the hot path.
     venueMirror?: VenueMirror;
+    /// Metrics aggregator (M3.9). Always present (no chain dependency); the relayer pool
+    /// pumps tx/auth events into it so `chain.throughput` returns live rolling-window rates
+    /// + latency percentiles.
+    metrics?: MetricsAggregator;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -206,6 +211,84 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         const id = readVenueId(params);
         const v = runtime.venueMirror.lookup(id);
         return v ? {enabled: true, venue: v} : {enabled: true, venue: null};
+    });
+    // M3.9 — `chain.throughput` is the headline rctctl command (plan §6 Read). Joins the
+    // metrics aggregator's rolling-window snapshot with instantaneous gauges from every
+    // subsystem so a single call gives operators / the in-game treasury window everything
+    // they need: rates, latency percentiles, queue depths, drops, RPC errors. Always
+    // returns `{enabled: true}` because the aggregator is wired unconditionally — even on
+    // a dry boot with no chain plumbing, the rates are zero rather than the surface absent.
+    server.register("chain.throughput", () => {
+        if (!runtime.metrics) return {enabled: false};
+        const snap = runtime.metrics.snapshot();
+        const batchStats = runtime.batcher?.stats();
+        const poolStats = runtime.relayerPool?.stats();
+        const outboxStats = runtime.outboxReader?.stats();
+        const funderStats = runtime.funder?.stats();
+        const permitStats = runtime.permits?.stats();
+        const sweeperStats = runtime.sweeper?.stats();
+        const venueStats = runtime.venueMirror?.stats();
+        return {
+            enabled: true,
+            now: snap.now,
+            windowMs: snap.windowMs,
+            txPerSecond: snap.txPerSecond,
+            authPerSecond: snap.authPerSecond,
+            txInWindow: snap.txInWindow,
+            authInWindow: snap.authInWindow,
+            latencyMs: snap.latencyMs,
+            batchFill: snap.batchFill,
+            totals: {
+                txSubmitted: snap.totalTxSubmitted,
+                authSubmitted: snap.totalAuthSubmitted,
+                txFailed: snap.totalTxFailed,
+                droppedAuthsFromMetrics: snap.totalDroppedAuths,
+            },
+            queues: {
+                /// Auths waiting for the next batch flush.
+                batcherDepth: batchStats?.queueDepth ?? null,
+                /// Batches waiting for a free relayer.
+                relayerPoolQueueDepth: poolStats?.queuedBatches ?? null,
+                /// Outbox events processed since boot — useful for "is the producer alive"
+                /// trending; the WAL depth isn't tracked server-side, so this is the closest
+                /// proxy we have here.
+                outboxProcessed: outboxStats?.processed ?? null,
+                /// Per-subsystem queue depths (low-volume admin paths).
+                funderDepth: funderStats?.queueDepth ?? null,
+                permitsDepth: permitStats?.queueDepth ?? null,
+                sweeperDepth: sweeperStats?.queueDepth ?? null,
+                venueMirrorDepth: venueStats?.queueDepth ?? null,
+            },
+            drops: {
+                /// Auth-side drops authoritatively counted by the batcher (oldest-drop on
+                /// active buffer overflow).
+                batcherAuths: batchStats?.droppedAuths ?? 0,
+                funderEntries: funderStats?.droppedEntries ?? 0,
+                permits: permitStats?.droppedPermits ?? 0,
+                sweeperExits: sweeperStats?.droppedExits ?? 0,
+                venueEvents: venueStats?.droppedEvents ?? 0,
+            },
+            errors: {
+                /// Per-subsystem error counters. Each is incremented on a failed RPC /
+                /// chain call; non-zero values are the signal to look at the logs.
+                batcherSinkErrors: batchStats?.sinkErrors ?? 0,
+                relayerPoolErrors: poolStats?.totalErrors ?? 0,
+                relayerPoolNonceRefreshes: poolStats?.totalNonceRefreshes ?? 0,
+                relayerPoolQueueRejections: poolStats?.totalQueueRejections ?? 0,
+                funderRpc: funderStats?.rpcErrors ?? 0,
+                permitsRpc: permitStats?.rpcErrors ?? 0,
+                sweeperRpc: sweeperStats?.rpcErrors ?? 0,
+                venueMirrorRpc: venueStats?.rpcErrors ?? 0,
+                venueMirrorSkippedAlreadyApplied: venueStats?.skippedAlreadyApplied ?? 0,
+            },
+            relayers: poolStats
+                ? {
+                      size: poolStats.size,
+                      busy: poolStats.busy,
+                      free: poolStats.free,
+                  }
+                : null,
+        };
     });
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {

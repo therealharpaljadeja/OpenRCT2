@@ -11,6 +11,7 @@ import {deriveGuest, relayerPool} from "../src/derive/index.js";
 import {GuestAddressCache} from "../src/derive/cache.js";
 import {Batcher, type Batch, type SinkResult} from "../src/batcher/index.js";
 import {RelayerPool, createNoopSubmitter} from "../src/relayers/index.js";
+import {MetricsAggregator} from "../src/metrics/index.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -21,6 +22,7 @@ const TEST_MNEMONIC = "test test test test test test test test test test test ju
 interface WithServerOpts {
     batcher?: Batcher;
     relayerPool?: RelayerPool;
+    metrics?: MetricsAggregator;
 }
 
 async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerOpts = {}): Promise<T> {
@@ -68,6 +70,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
     };
     if (opts.batcher) runtime.batcher = opts.batcher;
     if (opts.relayerPool) runtime.relayerPool = opts.relayerPool;
+    if (opts.metrics) runtime.metrics = opts.metrics;
     registerCoreHandlers(server, runtime);
     await server.listen();
     try {
@@ -239,6 +242,41 @@ test("chain.sweeper.status reports {enabled: false} when no sweeper is wired", a
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 75, method: "chain.sweeper.status"});
         assert.deepEqual(r.result, {enabled: false});
     });
+});
+
+test("chain.throughput returns {enabled: false} when no metrics aggregator is wired", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {jsonrpc: "2.0", id: 79, method: "chain.throughput"});
+        assert.deepEqual(r.result, {enabled: false});
+    });
+});
+
+test("chain.throughput returns rolling-window snapshot + joined gauges when metrics is wired", async () => {
+    const metrics = new MetricsAggregator();
+    metrics.recordTxSuccess(100, 50);
+    metrics.recordTxSuccess(200, 75);
+    metrics.recordTxSuccess(300, 100);
+    await withServer(
+        async (sock) => {
+            const r = await callOnce(sock, {jsonrpc: "2.0", id: 80, method: "chain.throughput"});
+            const result = r.result as Record<string, unknown>;
+            assert.equal(result.enabled, true);
+            assert.ok(typeof result.now === "number");
+            assert.equal(result.txInWindow, 3);
+            assert.equal(result.authInWindow, 600);
+            const latency = result.latencyMs as {p50: number | null; p95: number | null; p99: number | null};
+            assert.ok(latency.p50 !== null);
+            const totals = result.totals as {txSubmitted: number; authSubmitted: number; txFailed: number};
+            assert.equal(totals.txSubmitted, 3);
+            assert.equal(totals.authSubmitted, 600);
+            assert.equal(totals.txFailed, 0);
+            // Subsystem gauges default to null/0 because we didn't wire any.
+            const queues = result.queues as Record<string, unknown>;
+            assert.equal(queues.batcherDepth, null, "no batcher in this runtime → null");
+            assert.equal(queues.relayerPoolQueueDepth, null);
+        },
+        {metrics},
+    );
 });
 
 test("chain.venues.* reports {enabled: false} when no venue mirror is wired", async () => {
