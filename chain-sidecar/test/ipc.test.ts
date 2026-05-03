@@ -241,6 +241,22 @@ test("chain.sweeper.status reports {enabled: false} when no sweeper is wired", a
     });
 });
 
+test("chain.venues.* reports {enabled: false} when no venue mirror is wired", async () => {
+    await withServer(async (sock) => {
+        const status = await callOnce(sock, {jsonrpc: "2.0", id: 76, method: "chain.venues.status"});
+        assert.deepEqual(status.result, {enabled: false});
+        const list = await callOnce(sock, {jsonrpc: "2.0", id: 77, method: "chain.venues.list"});
+        assert.deepEqual(list.result, {enabled: false});
+        const get = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 78,
+            method: "chain.venues.get",
+            params: {id: 1},
+        });
+        assert.deepEqual(get.result, {enabled: false});
+    });
+});
+
 test("outbox.status reports {enabled: false} when no outbox is configured", async () => {
     await withServer(async (sock) => {
         const r = await callOnce(sock, {jsonrpc: "2.0", id: 60, method: "outbox.status"});

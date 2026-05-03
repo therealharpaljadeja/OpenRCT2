@@ -50,3 +50,18 @@ export const SETTLEMENT_BATCHER_ABI = parseAbi([
     "struct SpendAuth { address from; uint32 venueId; uint8 category; uint256 amount; uint64 nonce; uint64 deadline; uint64 gameTick; }",
     "function settle(SpendAuth[] auths, bytes[] sigs)",
 ]);
+
+/// `VenueRegistry` — owner-only catalog mirrored by M3.8. Selectors pinned to the deployed
+/// contract: register / rename / remove are write entrypoints; `venues` / `venueCount` /
+/// `venueIdAt` / `subAccountOf` are reads used for cache hydration on restart.
+export const VENUE_REGISTRY_ABI = parseAbi([
+    "function register(uint32 id, uint8 kind, string name, string objectType) returns (address subAccount)",
+    "function rename(uint32 id, string newName)",
+    "function remove(uint32 id)",
+    "function retarget(uint32 id, address newSubAccount)",
+    "function venues(uint32 id) view returns (uint32, uint8, string, string, address, uint64, bool)",
+    "function venueCount() view returns (uint256)",
+    "function venueIdAt(uint256 idx) view returns (uint32)",
+    "function subAccountOf(uint32 id) view returns (address)",
+    "function exists(uint32 id) view returns (bool)",
+]);

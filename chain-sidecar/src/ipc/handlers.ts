@@ -9,6 +9,7 @@ import type {RelayerPool} from "../relayers/index.js";
 import type {Funder} from "../funder/index.js";
 import type {PermitCollector} from "../permits/index.js";
 import type {Sweeper} from "../sweeper/index.js";
+import type {VenueMirror} from "../venues/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -54,6 +55,10 @@ export interface SidecarRuntime {
     /// balance to the treasury via batched `[permit, transferFrom]` pairs. Returns
     /// `{enabled: false}` over IPC when offline.
     sweeper?: Sweeper;
+    /// Venue mirror (M3.8). Submits one tx per `VENUE_*` event and caches the venue table
+    /// locally so the spend batcher can resolve `venueId → kind / subAccount` without a
+    /// chain read on the hot path.
+    venueMirror?: VenueMirror;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -186,6 +191,22 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("chain.sweeper.status", () =>
         runtime.sweeper ? {enabled: true, ...runtime.sweeper.stats()} : {enabled: false},
     );
+    // M3.8 — venue mirror status + lookup helpers. `chain.venues.list` returns the cached
+    // table so rctctl / the in-game treasury window can render it without re-reading the
+    // chain; `chain.venues.get` is the single-id form used by `rctctl chain venue --id <vid>`.
+    server.register("chain.venues.status", () =>
+        runtime.venueMirror ? {enabled: true, ...runtime.venueMirror.stats()} : {enabled: false},
+    );
+    server.register("chain.venues.list", () => {
+        if (!runtime.venueMirror) return {enabled: false};
+        return {enabled: true, venues: runtime.venueMirror.list()};
+    });
+    server.register("chain.venues.get", (params) => {
+        if (!runtime.venueMirror) return {enabled: false};
+        const id = readVenueId(params);
+        const v = runtime.venueMirror.lookup(id);
+        return v ? {enabled: true, venue: v} : {enabled: true, venue: null};
+    });
     server.register("chain.batch.config", (params) => {
         if (!runtime.batcher) {
             throw new RpcError(ErrorCode.InvalidRequest, "chain.batch.config: batcher not enabled");
@@ -244,6 +265,24 @@ function readIndex(params: unknown): number {
         throw new RpcError(
             ErrorCode.InvalidParams,
             `guest.address: index must be a non-negative integer, got ${String(raw)}`,
+        );
+    }
+    return raw;
+}
+
+/// Pull a uint32 venue id out of the JSON-RPC params (object or positional form).
+function readVenueId(params: unknown): number {
+    let raw: unknown;
+    if (Array.isArray(params)) raw = params[0];
+    else if (params && typeof params === "object" && "id" in params) {
+        raw = (params as {id: unknown}).id;
+    } else {
+        throw new RpcError(ErrorCode.InvalidParams, "chain.venues.get requires { id } or [id]");
+    }
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 0xffff_ffff) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            `chain.venues.get: id must be a uint32, got ${String(raw)}`,
         );
     }
     return raw;

@@ -24,6 +24,8 @@ const DEFAULT_PERMITS_MAX_QUEUED = 5_000;
 const DEFAULT_SWEEPER_WINDOW_SIZE = 200;
 const DEFAULT_SWEEPER_WINDOW_AGE_MS = 200;
 const DEFAULT_SWEEPER_MAX_QUEUED = 5_000;
+/// Venue mirror — venue events are sparse (admin path), so no batching, just a queue cap.
+const DEFAULT_VENUE_MIRROR_MAX_QUEUED = 1024;
 /// Days from now to use as the permit's `deadline`. Past this point a permit submission
 /// reverts with `ERC2612ExpiredSignature`. The deadline only constrains *submission* — once
 /// permit lands on-chain the allowance is set forever, so we want a generous default. 30 days
@@ -73,6 +75,8 @@ export interface SidecarConfig {
     sweeperWindowSize: number;
     sweeperWindowAgeMs: number;
     sweeperMaxQueued: number;
+    /// M3.8 venue mirror knobs.
+    venueMirrorMaxQueued: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -102,6 +106,7 @@ Options:
   --sweeper-window-size <n>        Max exits per sweep tx (default: 200)
   --sweeper-window-age-ms <n>      Max age of buffered exits before flush (default: 200)
   --sweeper-max-queued <n>         Drop-oldest cap on the sweeper buffer (default: 5000)
+  --venue-mirror-max-queued <n>    Drop-oldest cap on the venue mirror queue (default: 1024)
   -h, --help                       Show this help
 
 Environment:
@@ -135,6 +140,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let sweeperWindowSize = DEFAULT_SWEEPER_WINDOW_SIZE;
     let sweeperWindowAgeMs = DEFAULT_SWEEPER_WINDOW_AGE_MS;
     let sweeperMaxQueued = DEFAULT_SWEEPER_MAX_QUEUED;
+    let venueMirrorMaxQueued = DEFAULT_VENUE_MIRROR_MAX_QUEUED;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -297,6 +303,17 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 sweeperMaxQueued = n;
                 break;
             }
+            case "--venue-mirror-max-queued": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 1 || n > 1_000_000) {
+                    throw new Error(
+                        `--venue-mirror-max-queued must be an integer in [1, 1000000], got ${String(raw)}`,
+                    );
+                }
+                venueMirrorMaxQueued = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -343,6 +360,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         sweeperWindowSize,
         sweeperWindowAgeMs,
         sweeperMaxQueued,
+        venueMirrorMaxQueued,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;

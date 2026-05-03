@@ -22,6 +22,7 @@ import {RelayerPool, createNoopSubmitter, createViemSubmitter, type RelayerSubmi
 import {Funder} from "./funder/index.js";
 import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import {Sweeper} from "./sweeper/index.js";
+import {VenueMirror} from "./venues/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
 
 /// Sidecar entrypoint. Boots the JSON-RPC server, unlocks (or creates) the encrypted master
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
     let funder: Funder | undefined;
     let permits: PermitCollector | undefined;
     let sweeper: Sweeper | undefined;
+    let venueMirror: VenueMirror | undefined;
     let submitter: RelayerSubmitter;
     if (config.rpcUrl) {
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl);
@@ -132,6 +134,17 @@ async function main(): Promise<void> {
                 maxSize: config.permitsWindowSize,
                 maxAgeMs: config.permitsWindowAgeMs,
                 maxQueuedPermits: config.permitsMaxQueued,
+                log,
+            });
+            // M3.8 — venue mirror. Drains VENUE_* events one tx at a time (low volume) into
+            // VenueRegistry and caches venueId → kind / subAccount locally so the spend
+            // batcher (M3.x) can attach the venue's till + kind without a chain read on the
+            // hot path. Deployer is the registry's owner, so the same wallet client is fine.
+            venueMirror = new VenueMirror({
+                walletClient,
+                publicClient,
+                venueRegistry: config.deployments.demoPark.venueRegistry,
+                maxQueuedEvents: config.venueMirrorMaxQueued,
                 log,
             });
             // M3.7 — sweeper. On GUEST_EXIT, signs a fresh permit with spender=treasury (entry-
@@ -183,6 +196,7 @@ async function main(): Promise<void> {
     if (funder) runtime.funder = funder;
     if (permits) runtime.permits = permits;
     if (sweeper) runtime.sweeper = sweeper;
+    if (venueMirror) runtime.venueMirror = venueMirror;
 
     const server = new RpcServer(config.socketPath);
     registerCoreHandlers(server, runtime);
@@ -195,6 +209,17 @@ async function main(): Promise<void> {
             await funder.start();
         } catch (err) {
             log.error({err}, "funder.start failed; entering guests will not be funded");
+        }
+    }
+    if (venueMirror) {
+        venueMirror.start();
+        // Best-effort cache hydration so the spend batcher's lookups work right away after a
+        // restart, instead of waiting for the WAL to be re-played. A failure here doesn't
+        // block boot; the WAL replay will eventually re-populate the cache anyway.
+        try {
+            await venueMirror.hydrateFromChain();
+        } catch (err) {
+            log.warn({err}, "venueMirror.hydrateFromChain failed; cache will rebuild from outbox events");
         }
     }
     if (outboxReader) {
@@ -265,13 +290,36 @@ async function main(): Promise<void> {
                     sweeper.accept({hdIndex: event.hdIndex, address});
                     break;
                 }
-                // M3.8 (venue mirror), M3.x (spend) will plug their handlers here. Today these
-                // branches just log at debug.
-                case "GUEST_SPEND":
                 case "VENUE_REGISTERED":
+                    if (venueMirror) {
+                        venueMirror.accept({
+                            kind: "register",
+                            venueId: event.venueId,
+                            venueKind: event.venueKind,
+                            name: event.name,
+                            objectType: event.objectType,
+                        });
+                    } else {
+                        log.debug({event}, "VENUE_REGISTERED (mirror not configured)");
+                    }
+                    break;
                 case "VENUE_RENAMED":
+                    if (venueMirror) {
+                        venueMirror.accept({kind: "rename", venueId: event.venueId, newName: event.newName});
+                    } else {
+                        log.debug({event}, "VENUE_RENAMED (mirror not configured)");
+                    }
+                    break;
                 case "VENUE_REMOVED":
-                    log.debug({event}, "outbox event (no handler yet)");
+                    if (venueMirror) {
+                        venueMirror.accept({kind: "remove", venueId: event.venueId});
+                    } else {
+                        log.debug({event}, "VENUE_REMOVED (mirror not configured)");
+                    }
+                    break;
+                // M3.x (spend) will plug its handler here. Today this branch just logs.
+                case "GUEST_SPEND":
+                    log.debug({event}, "GUEST_SPEND (batcher dispatcher not yet wired)");
                     break;
             }
         });
@@ -289,6 +337,7 @@ async function main(): Promise<void> {
             funder: funder ? "configured" : null,
             permits: permits ? "configured" : null,
             sweeper: sweeper ? "configured" : null,
+            venueMirror: venueMirror ? "configured" : null,
         },
         "sidecar ready",
     );
@@ -302,6 +351,7 @@ async function main(): Promise<void> {
         if (funder) await funder.stop().catch((err) => log.error({err}, "funder stop failed"));
         if (permits) await permits.stop().catch((err) => log.error({err}, "permits stop failed"));
         if (sweeper) await sweeper.stop().catch((err) => log.error({err}, "sweeper stop failed"));
+        if (venueMirror) await venueMirror.stop().catch((err) => log.error({err}, "venueMirror stop failed"));
         await batcher.stop().catch((err) => log.error({err}, "batcher stop failed"));
         await relayerPoolHandle.stop().catch((err) => log.error({err}, "relayer pool stop failed"));
         await server.close();
