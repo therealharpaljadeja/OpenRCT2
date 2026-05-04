@@ -67,6 +67,15 @@ function makeMocks(initial: {
             }
             throw new Error(`unexpected readContract: ${args.functionName}`);
         },
+        // M3.13 — sweeper waits for receipt + checks status. Default to "success".
+        async waitForTransactionReceipt(args: {hash: Hex}): Promise<{
+            status: "success" | "reverted";
+            blockNumber: bigint;
+            gasUsed: bigint;
+            transactionHash: Hex;
+        }> {
+            return {status: "success", blockNumber: 1n, gasUsed: 0n, transactionHash: args.hash};
+        },
     } as unknown as PublicClient;
 
     return {
@@ -397,6 +406,14 @@ test("rpc errors increment rpcErrors and don't crash the queue", async () => {
             if (args.functionName === "balanceOf") return 1n;
             if (args.functionName === "nonces") return 0n;
             throw new Error(`unexpected: ${args.functionName}`);
+        },
+        async waitForTransactionReceipt(args: {hash: Hex}): Promise<{
+            status: "success" | "reverted";
+            blockNumber: bigint;
+            gasUsed: bigint;
+            transactionHash: Hex;
+        }> {
+            return {status: "success", blockNumber: 1n, gasUsed: 0n, transactionHash: args.hash};
         },
     } as unknown as PublicClient;
     const sweeper = new Sweeper({

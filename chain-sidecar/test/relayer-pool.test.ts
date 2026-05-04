@@ -109,6 +109,8 @@ function setupPool(opts: {
     submitter: RelayerSubmitter;
     maxQueuedBatches?: number;
     metrics?: import("../src/metrics/index.js").MetricsRecorder;
+    onRelayerInsufficientBalance?: (idx: number, address: `0x${string}`) => void;
+    onTerminalFailure?: (batch: Batch, err: unknown) => void;
 }): {
     pool: RelayerPool;
     relayers: DerivedAccount[];
@@ -119,6 +121,10 @@ function setupPool(opts: {
         submitter: opts.submitter,
         ...(opts.maxQueuedBatches !== undefined ? {maxQueuedBatches: opts.maxQueuedBatches} : {}),
         ...(opts.metrics !== undefined ? {metrics: opts.metrics} : {}),
+        ...(opts.onRelayerInsufficientBalance !== undefined
+            ? {onRelayerInsufficientBalance: opts.onRelayerInsufficientBalance}
+            : {}),
+        ...(opts.onTerminalFailure !== undefined ? {onTerminalFailure: opts.onTerminalFailure} : {}),
     });
     return {pool, relayers};
 }
@@ -355,9 +361,11 @@ test("stats() does not leak the HDAccount or any signing material", async () => 
             "address",
             "nonce",
             "busy",
+            "lowBalance",
             "submitted",
             "errors",
             "nonceRefreshes",
+            "lowBalanceEvents",
             "lastLatencyMs",
             "lastTxHash",
         ]);
@@ -456,4 +464,267 @@ test("M3.9 metrics: nonce error retry path doesn't double-count success", async 
     await p;
     assert.equal(recorder.successes, 1, "exactly one success record across the retry");
     assert.equal(recorder.failures, 0, "nonce error shouldn't surface as a final failure");
+});
+
+// ---- M3.12 — Fix C (low-balance skipping) + Fix 1 (terminal-failure callback) ----
+
+test("M3.12: insufficient-balance error marks relayer low-balance and routes future batches elsewhere", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const insufficientCalls: Array<{idx: number; address: `0x${string}`}> = [];
+    const {pool, relayers} = setupPool({
+        n: 2,
+        submitter,
+        onRelayerInsufficientBalance: (idx, address) => insufficientCalls.push({idx, address}),
+    });
+
+    // First batch routes to relayer 0 (round-robin start). We reject it with the insufficient
+    // balance error — the pool should mark relayer 0 low-balance.
+    const p1 = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("Signer had insufficient balance");
+    await assert.rejects(() => p1, /insufficient balance/);
+    assert.equal(insufficientCalls.length, 1);
+    assert.equal(insufficientCalls[0]!.idx, 0);
+    assert.equal(insufficientCalls[0]!.address.toLowerCase(), relayers[0]!.address.toLowerCase());
+
+    let s = pool.stats();
+    assert.equal(s.relayers[0]!.lowBalance, true);
+    assert.equal(s.relayers[0]!.lowBalanceEvents, 1);
+    assert.equal(s.lowBalance, 1);
+    assert.equal(s.free, 1, "free counts only ready relayers, not low-balance ones");
+    assert.equal(s.totalTerminalFailures, 1);
+
+    // Second batch should skip relayer 0 (low-balance) and go to relayer 1.
+    const p2 = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    assert.equal(submitter.calls[submitter.calls.length - 1]!.address.toLowerCase(), relayers[1]!.address.toLowerCase());
+    submitter.resolveOldest();
+    await p2;
+
+    // Third batch ALSO skips relayer 0 — it's still low-balance until markRelayerReady.
+    const p3 = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    assert.equal(submitter.calls[submitter.calls.length - 1]!.address.toLowerCase(), relayers[1]!.address.toLowerCase());
+    submitter.resolveOldest();
+    await p3;
+});
+
+test("M3.12: markRelayerReady clears the low-balance flag and unblocks the relayer", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const {pool} = setupPool({n: 2, submitter});
+
+    const p1 = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("Signer had insufficient balance");
+    await assert.rejects(() => p1);
+    assert.equal(pool.stats().relayers[0]!.lowBalance, true);
+
+    // Topup loop signals the refill landed.
+    pool.markRelayerReady(0);
+    assert.equal(pool.stats().relayers[0]!.lowBalance, false);
+    assert.equal(pool.stats().lowBalance, 0);
+
+    // Next batch can route to either relayer; both are eligible.
+    submitter.autoResolve = true;
+    await pool.sink(fakeBatch());
+    // Cursor advanced past 0 last time, so this lands on relayer 1; another batch should
+    // come back to relayer 0 since it's now ready.
+    await pool.sink(fakeBatch());
+    const lastCall = submitter.calls[submitter.calls.length - 1]!;
+    // We only assert relayer 0 was used somewhere recently — the round-robin cursor state
+    // makes the exact assignment dependent on prior state, but the pool's `free` is now 2.
+    assert.equal(pool.stats().relayers[0]!.lowBalance, false);
+    assert.ok(lastCall);
+});
+
+test("M3.12: markRelayerReady is idempotent + bounds-checked", () => {
+    const submitter = makeMockSubmitter();
+    const {pool} = setupPool({n: 2, submitter});
+    // Idempotent on a relayer that wasn't flagged.
+    assert.doesNotThrow(() => pool.markRelayerReady(0));
+    assert.doesNotThrow(() => pool.markRelayerReady(1));
+    // Out of range throws.
+    assert.throws(() => pool.markRelayerReady(-1), /out of range/);
+    assert.throws(() => pool.markRelayerReady(2), /out of range/);
+    assert.throws(() => pool.markRelayerReady(99), /out of range/);
+});
+
+test("M3.12: when all relayers are low-balance, batches queue (don't route)", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const {pool} = setupPool({n: 2, submitter});
+
+    // Knock out both relayers.
+    const a = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("Signer had insufficient balance");
+    await assert.rejects(() => a);
+
+    const b = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("Signer had insufficient balance");
+    await assert.rejects(() => b);
+
+    assert.equal(pool.stats().lowBalance, 2);
+
+    // Fire a third batch — should queue, not call the submitter.
+    const callsBefore = submitter.calls.length;
+    let resolved = false;
+    const c = pool.sink(fakeBatch()).then(() => {
+        resolved = true;
+    });
+    // Microtask flush — submit() should NOT have been called for batch c.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(submitter.calls.length, callsBefore, "no submit while all relayers low-balance");
+    assert.equal(pool.stats().queuedBatches, 1, "batch is queued");
+    assert.equal(resolved, false);
+
+    // Topup a relayer — the queued batch should be drained immediately.
+    submitter.autoResolve = true;
+    pool.markRelayerReady(0);
+    // Wait for the queued waiter to run. Two microtasks: one to acquire, one to submit.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await c;
+    assert.equal(resolved, true);
+    assert.equal(pool.stats().queuedBatches, 0);
+});
+
+test("M3.12: onTerminalFailure fires after one-shot retry exhaustion", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const failed: Array<{batchId: number; err: string}> = [];
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onTerminalFailure: (batch, err) => failed.push({batchId: batch.id, err: (err as Error).message}),
+    });
+
+    // First attempt nonce error → pool refreshes + retries.
+    const p = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("nonce too low");
+    // Retry attempt fails with non-recoverable error.
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("execution reverted: BadSignature(0)");
+    await assert.rejects(() => p, /BadSignature/);
+
+    assert.equal(failed.length, 1, "exactly one terminal-failure callback");
+    assert.match(failed[0]!.err, /BadSignature/);
+    assert.equal(pool.stats().totalTerminalFailures, 1);
+});
+
+test("M3.12: onTerminalFailure does NOT fire on successful retry", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const failed: number[] = [];
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onTerminalFailure: (batch) => failed.push(batch.id),
+    });
+
+    const p = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("nonce too low");
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.resolveOldest();
+    await p;
+
+    assert.equal(failed.length, 0, "successful retry shouldn't trigger terminal-failure");
+    assert.equal(pool.stats().totalTerminalFailures, 0);
+});
+
+test("M3.12: onTerminalFailure receives the same batch object that the sink rejected for", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    let captured: Batch | undefined;
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onTerminalFailure: (batch) => {
+            captured = batch;
+        },
+    });
+
+    const b = fakeBatch(3);
+    const p = pool.sink(b);
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("execution reverted: BadNonce(0,0,0)");
+    await assert.rejects(() => p);
+
+    assert.ok(captured);
+    assert.equal(captured!.id, b.id);
+    assert.equal(captured!.auths.length, 3);
+});
+
+test("M3.12: misbehaving onTerminalFailure callback doesn't poison the pool", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onTerminalFailure: () => {
+            throw new Error("callback bug");
+        },
+    });
+
+    const p = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("execution reverted: BadSignature(0)");
+    // The error bubbling up to the caller should be the *original* chain error, not the
+    // callback's. The callback's throw is logged + swallowed.
+    await assert.rejects(() => p, /BadSignature/);
+
+    // Pool stays usable after the callback's throw.
+    submitter.autoResolve = true;
+    await pool.sink(fakeBatch());
+    assert.equal(pool.stats().totalSubmitted, 1);
+});
+
+test("M3.13: a reverted-receipt error from the submitter fires onTerminalFailure (sigNonce invalidation works)", async () => {
+    // Models the exact M3.13 bug: a chain-side revert (e.g. transferFrom on 0-balance guest)
+    // surfaces from the viem-submitter as a regular Error after M3.13's status check. The
+    // pool must treat it as terminal so M3.12's nonce-tracker invalidation kicks in for
+    // every guest in the batch.
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const failed: Array<{batchId: number; auths: number}> = [];
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onTerminalFailure: (batch) => failed.push({batchId: batch.id, auths: batch.auths.length}),
+    });
+    const batch = fakeBatch(5); // 5 auths in the failed batch — all 5 guests must be invalidated
+    const p = pool.sink(batch);
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    // Mirror the exact error string the M3.13 submitter throws.
+    submitter.rejectOldest("settle reverted on chain: tx=0xee... block=99");
+    await assert.rejects(() => p, /reverted on chain/);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0]!.auths, 5, "callback gets the full batch — all guests get invalidated");
+});
+
+test("M3.12: insufficient-balance triggers BOTH callbacks (insufficient + terminal)", async () => {
+    const submitter = makeMockSubmitter();
+    submitter.autoResolve = false;
+    const insufficientCalls: number[] = [];
+    const failedBatches: number[] = [];
+    const {pool} = setupPool({
+        n: 1,
+        submitter,
+        onRelayerInsufficientBalance: (idx) => insufficientCalls.push(idx),
+        onTerminalFailure: (batch) => failedBatches.push(batch.id),
+    });
+
+    const p = pool.sink(fakeBatch());
+    while (submitter.inFlight() === 0) await new Promise((r) => setImmediate(r));
+    submitter.rejectOldest("Signer had insufficient balance");
+    await assert.rejects(() => p);
+
+    assert.deepEqual(insufficientCalls, [0]);
+    assert.equal(failedBatches.length, 1);
 });

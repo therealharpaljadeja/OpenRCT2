@@ -10,6 +10,7 @@ export type {
     VenueRegisteredEvent,
     VenueRenamedEvent,
     VenueRemovedEvent,
+    OutboxEventWithoutSeq,
     ParseResult,
 } from "./types.js";
 export {parseEvent, serializeEvent} from "./types.js";

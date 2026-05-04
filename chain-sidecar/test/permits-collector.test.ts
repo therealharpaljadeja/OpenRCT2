@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {decodeFunctionData, type Hex, type WalletClient} from "viem";
+import {decodeFunctionData, type Hex, type PublicClient, type WalletClient} from "viem";
 import {PARK_TOKEN_ABI, PARK_TREASURY_ABI} from "../src/chain/abis.js";
 import {deriveGuest} from "../src/derive/index.js";
 import {
@@ -24,7 +24,7 @@ interface SentTx {
     value: bigint;
 }
 
-function makeMocks(): {walletClient: WalletClient; sent: SentTx[]} {
+function makeMocks(): {walletClient: WalletClient; publicClient: PublicClient; sent: SentTx[]} {
     const sent: SentTx[] = [];
     let counter = 0;
     const walletClient = {
@@ -36,7 +36,18 @@ function makeMocks(): {walletClient: WalletClient; sent: SentTx[]} {
             return (`0x${counter.toString(16).padStart(64, "0")}`) as Hex;
         },
     } as unknown as WalletClient;
-    return {walletClient, sent};
+    const publicClient = {
+        // M3.13 — the collector waits for receipt + checks status. Default to "success".
+        async waitForTransactionReceipt(args: {hash: Hex}): Promise<{
+            status: "success" | "reverted";
+            blockNumber: bigint;
+            gasUsed: bigint;
+            transactionHash: Hex;
+        }> {
+            return {status: "success", blockNumber: 1n, gasUsed: 0n, transactionHash: args.hash};
+        },
+    } as unknown as PublicClient;
+    return {walletClient, publicClient, sent};
 }
 
 function makeCollector(extra: Partial<PermitCollectorOptions> = {}): {
@@ -57,6 +68,7 @@ function makeCollector(extra: Partial<PermitCollectorOptions> = {}): {
     }) as unknown as typeof clearTimeout;
     const collector = new PermitCollector({
         walletClient: mocks.walletClient,
+        publicClient: mocks.publicClient,
         treasury: TREASURY,
         parkToken: PARK_TOKEN,
         now: () => t,
@@ -91,11 +103,12 @@ async function makeSignedPermit(idx = 0, deadline = 1_900_000_000n): Promise<Sig
 }
 
 test("constructor rejects bad address / missing account", () => {
-    const {walletClient} = makeMocks();
+    const {walletClient, publicClient} = makeMocks();
     assert.throws(
         () =>
             new PermitCollector({
                 walletClient,
+                publicClient,
                 treasury: "0x" as `0x${string}`,
                 parkToken: PARK_TOKEN,
             }),
@@ -106,6 +119,7 @@ test("constructor rejects bad address / missing account", () => {
         () =>
             new PermitCollector({
                 walletClient: noAccount,
+                publicClient,
                 treasury: TREASURY,
                 parkToken: PARK_TOKEN,
             }),
@@ -219,8 +233,10 @@ test("rpc errors increment rpcErrors and don't poison the queue", async () => {
             throw new Error("rpc: server unavailable");
         },
     } as unknown as WalletClient;
+    const {publicClient} = makeMocks();
     const collector = new PermitCollector({
         walletClient: wallet,
+        publicClient,
         treasury: TREASURY,
         parkToken: PARK_TOKEN,
         maxSize: 1,

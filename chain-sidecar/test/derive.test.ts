@@ -3,8 +3,14 @@ import assert from "node:assert/strict";
 import {
     DEFAULT_RELAYER_COUNT,
     MAX_RELAYER_COUNT,
+    OPERATOR_COUNT,
+    OPERATOR_FUNDER,
+    OPERATOR_PERMITS,
+    OPERATOR_SWEEPER,
     deriveGuest,
+    deriveOperator,
     deriveRelayer,
+    operatorPool,
     relayerPool,
 } from "../src/derive/index.js";
 
@@ -57,4 +63,45 @@ test("relayerPool rejects non-integer / out-of-range counts", () => {
 test("deriveGuest rejects negative index", () => {
     assert.throws(() => deriveGuest(TEST_MNEMONIC, -1), /invalid guest index/);
     assert.throws(() => deriveGuest(TEST_MNEMONIC, 0.5), /invalid guest index/);
+});
+
+// ---- M3.14 — operator role at change-index 2 ----
+
+test("deriveOperator change-index 2 is on a separate branch from guest + relayer", () => {
+    const guest0 = deriveGuest(TEST_MNEMONIC, 0);
+    const relayer0 = deriveRelayer(TEST_MNEMONIC, 0);
+    const operator0 = deriveOperator(TEST_MNEMONIC, 0);
+    const all = new Set([
+        guest0.address.toLowerCase(),
+        relayer0.address.toLowerCase(),
+        operator0.address.toLowerCase(),
+    ]);
+    assert.equal(all.size, 3, "guest/relayer/operator at idx 0 must yield three distinct addresses");
+    assert.match(operator0.path, /^m\/44'\/60'\/0'\/2\/0$/);
+});
+
+test("deriveOperator is deterministic across calls + indices yield distinct addresses", () => {
+    const a0 = deriveOperator(TEST_MNEMONIC, 0);
+    const a1 = deriveOperator(TEST_MNEMONIC, 0);
+    assert.equal(a0.address, a1.address);
+    const b = deriveOperator(TEST_MNEMONIC, 1);
+    const c = deriveOperator(TEST_MNEMONIC, 2);
+    const set = new Set([a0.address, b.address, c.address]);
+    assert.equal(set.size, 3);
+});
+
+test("deriveOperator rejects negative / non-integer index", () => {
+    assert.throws(() => deriveOperator(TEST_MNEMONIC, -1), /invalid operator index/);
+    assert.throws(() => deriveOperator(TEST_MNEMONIC, 0.5), /invalid operator index/);
+});
+
+test("operatorPool returns OPERATOR_COUNT distinct accounts in canonical order", () => {
+    const pool = operatorPool(TEST_MNEMONIC);
+    assert.equal(pool.length, OPERATOR_COUNT);
+    const addrs = pool.map((p) => p.address.toLowerCase());
+    assert.equal(new Set(addrs).size, OPERATOR_COUNT);
+    // Role constants are 0/1/2 — the pool is indexed by them.
+    assert.equal(pool[OPERATOR_FUNDER]!.address, deriveOperator(TEST_MNEMONIC, 0).address);
+    assert.equal(pool[OPERATOR_PERMITS]!.address, deriveOperator(TEST_MNEMONIC, 1).address);
+    assert.equal(pool[OPERATOR_SWEEPER]!.address, deriveOperator(TEST_MNEMONIC, 2).address);
 });

@@ -1,6 +1,7 @@
 import {encodeFunctionData, type Hex, type PublicClient, type WalletClient} from "viem";
 import type {LocalAccount} from "viem/accounts";
 import {PARK_TOKEN_ABI, PARK_TREASURY_ABI} from "../chain/abis.js";
+import {submitAndConfirm} from "../chain/clients.js";
 import {log as defaultLog, type Logger} from "../log.js";
 import {signPermit, type PermitDomain} from "../permits/sign.js";
 
@@ -407,14 +408,13 @@ export class Sweeper {
     }
 
     async #sendTreasuryCall(data: Hex): Promise<Hex> {
-        const account = this.#walletClient.account!;
-        const chain = this.#walletClient.chain ?? null;
-        return this.#walletClient.sendTransaction({
-            account,
-            chain,
-            to: this.#treasury,
-            data,
-            value: 0n,
+        // M3.13 + M3.16 — submit + receipt-status + retry on Monad mempool-lag errors.
+        return submitAndConfirm({
+            walletClient: this.#walletClient,
+            publicClient: this.#publicClient,
+            request: {to: this.#treasury, data, value: 0n},
+            opName: "sweeper.treasury.executeBatch",
+            log: this.#log,
         });
     }
 }

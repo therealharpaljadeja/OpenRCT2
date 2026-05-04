@@ -13,6 +13,16 @@ export interface RelayerTopUpOptions {
     /// to succeed within ~1 block, so 30s of latency is fine — top-up is a slow safety net,
     /// not the hot path.
     intervalMs?: number;
+    /// M3.12 — invoked once per tick *for every relayer whose chain balance is at-or-above
+    /// `lowWater`* — both relayers we just refilled and relayers that were already healthy.
+    /// The relayer pool's `markRelayerReady(idx)` is the natural consumer: a relayer that
+    /// was flagged low-balance during a stress burst comes back online once the chain
+    /// confirms it has gas again. Firing for already-healthy relayers too matters because
+    /// gas-estimation can flag a relayer "low" before its balance actually drops below the
+    /// loop's threshold (the wallet's max-fee buffer is conservative): the next tick sees
+    /// "still healthy on chain" and we want the flag cleared. Errors from the callback are
+    /// logged + swallowed so a misbehaving consumer can't take the topup loop down.
+    onRelayerFunded?: (idx: number, address: `0x${string}`) => void;
     log?: Logger;
 }
 
@@ -51,7 +61,15 @@ export class RelayerTopUp {
     readonly #lowWater: bigint;
     readonly #target: bigint;
     readonly #intervalMs: number;
+    readonly #onRelayerFunded: ((idx: number, address: `0x${string}`) => void) | undefined;
     readonly #log: Logger;
+    /// M3.12 — set by `requestImmediate()`; the loop checks it after each tick and fires
+    /// another tick right away instead of sleeping. Replaces the polling latency with
+    /// near-zero on-demand response when the relayer pool signals a low-balance event.
+    #immediateRequested = false;
+    /// M3.12 — resolves the next loop iteration's wait early when set. The wait loop
+    /// `await`s this; `requestImmediate()` resolves it.
+    #wakeResolve: (() => void) | undefined;
     #running = false;
     #stopWanted = false;
     #stats: RelayerTopUpStats;
@@ -68,6 +86,7 @@ export class RelayerTopUp {
         this.#lowWater = opts.lowWater;
         this.#target = opts.target;
         this.#intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
+        this.#onRelayerFunded = opts.onRelayerFunded;
         this.#log = (opts.log ?? rootLog).child({topup: "relayer"});
         this.#stats = {
             running: false,
@@ -113,6 +132,20 @@ export class RelayerTopUp {
         return this.#tick();
     }
 
+    /// M3.12 — interrupt the polling sleep so the next tick fires right now. Idempotent:
+    /// multiple calls during a single sleep period collapse to one extra tick. Called by
+    /// the relayer pool's `onRelayerInsufficientBalance` callback so a low-MON event
+    /// doesn't have to wait up to `intervalMs` to be addressed. Safe to call before
+    /// `start()` — sets a flag that the first iteration consumes.
+    requestImmediate(): void {
+        this.#immediateRequested = true;
+        if (this.#wakeResolve) {
+            const r = this.#wakeResolve;
+            this.#wakeResolve = undefined;
+            r();
+        }
+    }
+
     stats(): RelayerTopUpStats {
         return {
             ...this.#stats,
@@ -130,12 +163,22 @@ export class RelayerTopUp {
                 this.#stats.errors++;
                 this.#log.error({err}, "relayer top-up tick failed");
             }
-            // Bounded sleep that observes `stop()` quickly enough — break the wait into
-            // 100ms chunks so shutdown isn't held up by a long interval.
+            // M3.12 — the wait observes `stop()`, `requestImmediate()`, and the interval
+            // deadline. We park on a wake promise that `requestImmediate` can resolve early.
             const deadline = Date.now() + this.#intervalMs;
-            while (!this.#stopWanted && Date.now() < deadline) {
-                await sleep(Math.min(100, deadline - Date.now()));
+            while (!this.#stopWanted && Date.now() < deadline && !this.#immediateRequested) {
+                const remaining = deadline - Date.now();
+                const wake = new Promise<void>((resolve) => {
+                    this.#wakeResolve = resolve;
+                });
+                // 100 ms ceiling so `stop()` is observed promptly even if no wake fires.
+                const ceiling = sleep(Math.min(100, remaining));
+                await Promise.race([wake, ceiling]);
+                // Clear the wake so the next iteration installs a fresh one.
+                this.#wakeResolve = undefined;
             }
+            // Consume the immediate flag — an extra tick now, then back to interval polling.
+            this.#immediateRequested = false;
         }
     }
 
@@ -143,30 +186,53 @@ export class RelayerTopUp {
         const balances = await this.#balances.nativeBalances(this.#relayers);
         this.#stats.lastCheckedAt = Date.now();
         this.#stats.lastBalances = {};
-        const under: {addr: `0x${string}`; need: bigint}[] = [];
+        const under: {idx: number; addr: `0x${string}`; need: bigint}[] = [];
+        const healthy: {idx: number; addr: `0x${string}`}[] = [];
         for (let i = 0; i < this.#relayers.length; i++) {
             const addr = this.#relayers[i]!;
             const bal = balances[i]!;
             this.#stats.lastBalances[addr] = bal.toString();
             if (bal < this.#lowWater) {
-                under.push({addr, need: this.#target - bal});
+                under.push({idx: i, addr, need: this.#target - bal});
+            } else {
+                healthy.push({idx: i, addr});
             }
         }
         this.#stats.lastRefilled = under.length;
-        if (under.length === 0) return false;
 
-        const txHash = await this.#faucet.dripMon(
-            under.map((u) => u.addr),
-            under.map((u) => u.need),
-        );
-        this.#stats.refillTxCount++;
-        this.#stats.refillRelayerCount += under.length;
-        this.#stats.lastRefillTx = txHash;
-        this.#log.info(
-            {refilled: under.length, tx: txHash, addrs: under.map((u) => u.addr)},
-            "relayer top-up issued",
-        );
-        return true;
+        let refilled = false;
+        if (under.length > 0) {
+            const txHash = await this.#faucet.dripMon(
+                under.map((u) => u.addr),
+                under.map((u) => u.need),
+            );
+            this.#stats.refillTxCount++;
+            this.#stats.refillRelayerCount += under.length;
+            this.#stats.lastRefillTx = txHash;
+            refilled = true;
+            this.#log.info(
+                {refilled: under.length, tx: txHash, addrs: under.map((u) => u.addr)},
+                "relayer top-up issued",
+            );
+        }
+
+        // M3.12 — fire the callback for *every* healthy relayer this tick: both the ones we
+        // just refilled (now at `target`) and the ones that were already at-or-above
+        // `lowWater`. The pool's `markRelayerReady` is idempotent, so firing for already-
+        // ready relayers is cheap; the alternative ("only fire for refills") leaves stale
+        // lowBalance flags whenever the pool flagged a relayer the topup tick later observes
+        // healthy without dripping (e.g. gas-estimation buffer was conservative).
+        if (this.#onRelayerFunded) {
+            const all = [...under.map((u) => ({idx: u.idx, addr: u.addr})), ...healthy];
+            for (const r of all) {
+                try {
+                    this.#onRelayerFunded(r.idx, r.addr);
+                } catch (cbErr) {
+                    this.#log.error({cbErr, idx: r.idx, addr: r.addr}, "onRelayerFunded callback threw");
+                }
+            }
+        }
+        return refilled;
     }
 
     #statsForLog(): Record<string, unknown> {

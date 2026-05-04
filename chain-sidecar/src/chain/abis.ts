@@ -35,6 +35,9 @@ export const DISPERSE_ABI = parseAbi([
 export const PARK_TREASURY_ABI = parseAbi([
     "function execute(address target, uint256 value, bytes data) returns (bytes)",
     "function executeBatch(address[] targets, uint256[] values, bytes[] datas) returns (bytes[])",
+    "function addOperator(address op)",
+    "function removeOperator(address op)",
+    "function operators(address op) view returns (bool)",
 ]);
 
 export const FAUCET_ABI = parseAbi([
@@ -49,6 +52,7 @@ export const FAUCET_ABI = parseAbi([
 export const SETTLEMENT_BATCHER_ABI = parseAbi([
     "struct SpendAuth { address from; uint32 venueId; uint8 category; uint256 amount; uint64 nonce; uint64 deadline; uint64 gameTick; }",
     "function settle(SpendAuth[] auths, bytes[] sigs)",
+    "function sigNonces(address guest) view returns (uint64)",
 ]);
 
 /// `VenueRegistry` — owner-only catalog mirrored by M3.8. Selectors pinned to the deployed

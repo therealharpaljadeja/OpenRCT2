@@ -214,3 +214,182 @@ test("RelayerTopUp loop survives a transient balance-read failure", async () => 
 function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
 }
+
+// ---- M3.12 — onRelayerFunded callback + requestImmediate ----
+
+test("M3.12: onRelayerFunded fires for every healthy relayer per tick (refilled + already-healthy)", async () => {
+    const balances = mockBalances({
+        [RELAYERS[0]!]: 0n, // under water → drip
+        [RELAYERS[1]!]: TARGET, // already healthy
+        [RELAYERS[2]!]: 0n, // under water → drip
+    });
+    const faucet = mockFaucet();
+    const funded: Array<{idx: number; addr: `0x${string}`}> = [];
+    const topup = new RelayerTopUp(balances.reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        onRelayerFunded: (idx, addr) => funded.push({idx, addr}),
+    });
+
+    await topup.tickOnce();
+
+    // All 3 relayers are healthy after the tick (0 + 2 dripped to target, 1 was already
+    // healthy). The callback fires once per healthy relayer to clear any stale
+    // lowBalance flag the pool may be holding.
+    assert.equal(funded.length, 3);
+    assert.deepEqual(
+        funded.map((f) => f.idx).sort((a, b) => a - b),
+        [0, 1, 2],
+    );
+    assert.equal(faucet.monCalls.length, 1, "exactly one drip tx for the 2 under-water relayers");
+});
+
+test("M3.12: onRelayerFunded fires for healthy relayers even with no drip", async () => {
+    const balances = mockBalances({
+        [RELAYERS[0]!]: TARGET,
+        [RELAYERS[1]!]: TARGET,
+        [RELAYERS[2]!]: TARGET,
+    });
+    const faucet = mockFaucet();
+    const funded: number[] = [];
+    const topup = new RelayerTopUp(balances.reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        onRelayerFunded: (idx) => funded.push(idx),
+    });
+    await topup.tickOnce();
+    // All 3 are healthy → all 3 fire, even though no drip happened. This is what unsticks a
+    // pool whose lowBalance flag is set but the chain says the relayer is fine.
+    assert.equal(funded.length, 3);
+    assert.equal(faucet.monCalls.length, 0, "no drip when all are healthy");
+});
+
+test("M3.12: onRelayerFunded does NOT fire for relayers still under water after a tick", async () => {
+    // A degenerate case where dripMon throws — the under-water relayers stay under water,
+    // so they shouldn't be reported as healthy. The healthy one still fires.
+    const balances = mockBalances({
+        [RELAYERS[0]!]: 0n,
+        [RELAYERS[1]!]: TARGET,
+        [RELAYERS[2]!]: 0n,
+    });
+    const faucet: FaucetWriter = {
+        async dripPark() {
+            throw new Error("not used");
+        },
+        async dripMon() {
+            throw new Error("dripMon failed");
+        },
+    };
+    const funded: number[] = [];
+    const topup = new RelayerTopUp(balances.reader, faucet, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        onRelayerFunded: (idx) => funded.push(idx),
+    });
+    await assert.rejects(() => topup.tickOnce());
+    // The drip tx threw — no healthy callbacks fire either (we bail before the loop).
+    assert.equal(funded.length, 0);
+});
+
+test("M3.12: misbehaving onRelayerFunded callback doesn't poison the loop", async () => {
+    const balances = mockBalances({
+        [RELAYERS[0]!]: 0n,
+        [RELAYERS[1]!]: 0n,
+        [RELAYERS[2]!]: 0n,
+    });
+    const faucet = mockFaucet();
+    const seen: number[] = [];
+    const topup = new RelayerTopUp(balances.reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        onRelayerFunded: (idx) => {
+            seen.push(idx);
+            if (idx === 1) throw new Error("callback bug for relayer 1");
+        },
+    });
+    await topup.tickOnce();
+    assert.deepEqual(
+        seen.sort((a, b) => a - b),
+        [0, 1, 2],
+    );
+    assert.equal(faucet.monCalls.length, 1);
+});
+
+test("M3.12: requestImmediate wakes the loop early", async () => {
+    const balances = mockBalances({
+        [RELAYERS[0]!]: TARGET,
+        [RELAYERS[1]!]: TARGET,
+        [RELAYERS[2]!]: TARGET,
+    });
+    const faucet = mockFaucet();
+    let tickCount = 0;
+    const reader: BalanceReader = {
+        nativeBalance: async () => 0n,
+        parkBalance: async () => 0n,
+        nativeBalances: async (addrs) => {
+            tickCount++;
+            return addrs.map(() => TARGET);
+        },
+    };
+    const topup = new RelayerTopUp(reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        intervalMs: 5_000, // long interval — wouldn't fire on its own during the test
+    });
+    topup.start();
+    while (tickCount < 1) await sleep(5);
+    const t0 = Date.now();
+    topup.requestImmediate();
+    while (tickCount < 2) await sleep(5);
+    const elapsed = Date.now() - t0;
+    await topup.stop();
+    assert.ok(elapsed < 1000, `requestImmediate should wake quickly; elapsed=${elapsed}ms`);
+    assert.equal(tickCount, 2);
+});
+
+test("M3.12: requestImmediate is safe to call before start()", () => {
+    const balances = mockBalances({});
+    const faucet = mockFaucet();
+    const topup = new RelayerTopUp(balances.reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        intervalMs: 100,
+    });
+    assert.doesNotThrow(() => topup.requestImmediate());
+});
+
+test("M3.12: requestImmediate is idempotent within one wait window", async () => {
+    let tickCount = 0;
+    const reader: BalanceReader = {
+        nativeBalance: async () => 0n,
+        parkBalance: async () => 0n,
+        nativeBalances: async (addrs) => {
+            tickCount++;
+            return addrs.map(() => TARGET);
+        },
+    };
+    const faucet = mockFaucet();
+    const topup = new RelayerTopUp(reader, faucet.writer, {
+        relayers: RELAYERS,
+        lowWater: LOW_WATER,
+        target: TARGET,
+        intervalMs: 5_000,
+    });
+    topup.start();
+    while (tickCount < 1) await sleep(5);
+    // Three rapid requestImmediate calls during the same sleep window.
+    topup.requestImmediate();
+    topup.requestImmediate();
+    topup.requestImmediate();
+    while (tickCount < 2) await sleep(5);
+    await sleep(200); // give the loop time to settle.
+    await topup.stop();
+    // Don't expect 4 — collapsed to 2 (initial natural + one immediate).
+    assert.ok(tickCount < 4, `expected < 4 ticks, saw ${tickCount}`);
+});

@@ -58,6 +58,21 @@ export function isNonceError(err: unknown): boolean {
     return NONCE_ERROR_PATTERNS.some((re) => re.test(msg));
 }
 
+/// "This relayer's MON dropped below what the next tx needs" — distinct from `isNonceError`
+/// because the recovery action is different: the pool can't retry on the same relayer until
+/// the topup loop refills it, so the right move is to mark the relayer offline and route
+/// future batches elsewhere. M3.12 (c).
+const INSUFFICIENT_BALANCE_PATTERNS: readonly RegExp[] = [
+    /signer had insufficient balance/i,    // Monad: Geth-style sync RPC
+    /insufficient funds for gas/i,         // generic Geth/Erigon
+    /insufficient balance for transfer/i,  // some L2s
+];
+
+export function isInsufficientBalanceError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return INSUFFICIENT_BALANCE_PATTERNS.some((re) => re.test(msg));
+}
+
 /// Stand-in submitter that doesn't touch the network. Useful in three places:
 ///   1. M3.3 boot before M3.4's viem-backed submitter exists — the sidecar can wire the
 ///      pool end-to-end into the batcher without an RPC URL or funded relayers.

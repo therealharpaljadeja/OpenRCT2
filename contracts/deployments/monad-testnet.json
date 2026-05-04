@@ -1,21 +1,21 @@
 {
   "chainId": 10143,
   "demoPark": {
-    "guestRegistry": "0x88C453755AE5518D779F52174D768c296D958e2f",
-    "lendingPool": "0x364630E9F91958Bc20FdAa98d5B28824273ac26d",
-    "settlementBatcher": "0x5266392DC0930C134a75E2900Ef1103B64722042",
-    "treasury": "0xf1A95d2689E2949ff128Cb943E9BF564e6f91beD",
-    "venueRegistry": "0xe6Eaaf90380840b2F5F7509138BA330e5EC8B812"
+    "guestRegistry": "0xa2dd713F0dC6138640c7Fb8fac660812787a9902",
+    "lendingPool": "0x8A06cEc79E7C6BfB399Be57c9e653A35f56fF4E9",
+    "settlementBatcher": "0x67d35905B93d4F4a82a5CDcca8c0400198F57B52",
+    "treasury": "0x37641EBcfC29A6070da81389dD2E3461A4B1C0fB",
+    "venueRegistry": "0x6384430d201E8fF6bF6bee8Acb99882b0A119270"
   },
   "deployer": "0x74f29100178a388f8cf3872D4d73F65F66fD0386",
   "globals": {
-    "disperse": "0x3329a07443cd3755BA46364Ef083B64193706A56",
-    "faucet": "0x01Dc4d083268BDE65226C21d2cf0f50CA3214475",
-    "parkToken": "0x7555BE7675C7826657d61adb0b97abf42B80a47F"
+    "disperse": "0x87B378d9199E1CE589196CEE6A53e2acA50c0089",
+    "faucet": "0x8bF1C52eb596f58589b5dF2aC2E34199E2FF8bE3",
+    "parkToken": "0x9b37c4a296a28F2374838fbcD45fdF8aA4A94218"
   },
   "loan": {
     "maxBorrow": "1000000000000000000000000",
     "ratePerBlock": 1000000000000
   },
-  "startBlock": 29174215
+  "startBlock": 29424477
 }

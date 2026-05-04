@@ -4,7 +4,7 @@ import type {GuestAddressCache} from "../derive/cache.js";
 import type {OutboxReader} from "../outbox/index.js";
 import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js";
 import {parkLaunchSetup} from "../chain/index.js";
-import type {Batcher} from "../batcher/index.js";
+import type {Batcher, SpendDispatcher, SpendNonceTracker} from "../batcher/index.js";
 import type {RelayerPool} from "../relayers/index.js";
 import type {Funder} from "../funder/index.js";
 import type {PermitCollector} from "../permits/index.js";
@@ -68,6 +68,13 @@ export interface SidecarRuntime {
     /// Per-guest spend rate limiter (M3.10). Always present; the GUEST_SPEND dispatcher
     /// consults it before any signing work and drops over-cap spends with a counter bump.
     rateLimiter?: SpendRateLimiter;
+    /// Per-guest signature-nonce tracker (M3.11). Present together with the chain plumbing
+    /// — first-touch fetch reads `SettlementBatcher.sigNonces[guest]` from chain. The
+    /// dispatcher reserves the next nonce here on every accepted GUEST_SPEND.
+    spendNonces?: SpendNonceTracker;
+    /// GUEST_SPEND → SpendAuth → Batcher hot path (M3.11). Present when chain plumbing is
+    /// configured; the outbox dispatcher routes every GUEST_SPEND through `handle()`.
+    spendDispatcher?: SpendDispatcher;
 }
 
 /// Handlers that exist from M2.1+ onward. As later milestones land — batcher, venue mirror,
@@ -233,6 +240,7 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         const sweeperStats = runtime.sweeper?.stats();
         const venueStats = runtime.venueMirror?.stats();
         const rateStats = runtime.rateLimiter?.stats();
+        const dispatchStats = runtime.spendDispatcher?.stats();
         return {
             enabled: true,
             now: snap.now,
@@ -275,6 +283,13 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
                 /// Spends rejected by the M3.10 per-guest rate limiter — pre-batcher drops.
                 /// A non-zero counter signals one or more runaway guests at the cap.
                 rateLimitedSpends: rateStats?.rejected ?? 0,
+                /// M3.11 dispatcher drops, broken out by reason. Mostly zero in healthy
+                /// operation; non-zero `unknownVenue` flags a venue-mirror lag, `nonceErrors`
+                /// flags chain-RPC trouble during the first-touch nonce fetch.
+                dispatcherUnknownVenue: dispatchStats?.droppedUnknownVenue ?? 0,
+                dispatcherInactiveVenue: dispatchStats?.droppedInactiveVenue ?? 0,
+                dispatcherAddressDerivation: dispatchStats?.droppedAddressDerivation ?? 0,
+                dispatcherMalformed: dispatchStats?.droppedMalformed ?? 0,
             },
             errors: {
                 /// Per-subsystem error counters. Each is incremented on a failed RPC /
@@ -288,6 +303,10 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
                 sweeperRpc: sweeperStats?.rpcErrors ?? 0,
                 venueMirrorRpc: venueStats?.rpcErrors ?? 0,
                 venueMirrorSkippedAlreadyApplied: venueStats?.skippedAlreadyApplied ?? 0,
+                /// M3.11 dispatcher chain/sign errors. Distinct from the relayer pool's
+                /// errors because they happen *before* a batch is built.
+                dispatcherSignErrors: dispatchStats?.signErrors ?? 0,
+                dispatcherNonceErrors: dispatchStats?.nonceErrors ?? 0,
             },
             relayers: poolStats
                 ? {
@@ -315,6 +334,20 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
             throw new RpcError(ErrorCode.InvalidParams, err instanceof Error ? err.message : String(err));
         }
         return {ok: true, ...runtime.batcher.stats()};
+    });
+    // M3.11 — GUEST_SPEND dispatcher status. Surfaces the per-reason drop histogram and the
+    // sig-nonce tracker stats so a stress run can see exactly where events went: dropped vs
+    // signed vs sink-error. Returns `{enabled: false}` offline (matches the rest of the
+    // chain-* surface).
+    server.register("chain.spend.status", () => {
+        if (!runtime.spendDispatcher) return {enabled: false};
+        const dispatch = runtime.spendDispatcher.stats();
+        const nonceStats = runtime.spendNonces?.stats() ?? {size: 0, fetches: 0};
+        return {
+            enabled: true,
+            dispatcher: dispatch,
+            nonces: nonceStats,
+        };
     });
     // M3.10 — per-guest spend rate cap. Always-on (no chain dependency).
     server.register("chain.ratelimit.status", () =>

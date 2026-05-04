@@ -26,3 +26,9 @@ export {
     type SignedAuth,
     type SinkResult,
 } from "./batch.js";
+/// M3.11 — per-guest signature-nonce tracker (lazy chain fetch + local increment).
+export {SpendNonceTracker} from "./nonces.js";
+export type {SpendNonceTrackerOptions, SpendNonceTrackerChainOptions, SpendNonceTrackerTestOptions} from "./nonces.js";
+/// M3.11 — GUEST_SPEND → SpendAuth → Batcher hot path.
+export {SpendDispatcher, DEFAULT_AUTH_DEADLINE_SECONDS} from "./dispatch.js";
+export type {SpendDispatcherOptions, SpendDispatcherStats} from "./dispatch.js";

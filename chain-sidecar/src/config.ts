@@ -86,6 +86,15 @@ export interface SidecarConfig {
     /// M3.10 outbox WAL byte cap. The (test) producer rotates by truncating when the next
     /// append would push past this; the reader detects the shrink and resets. Plan §10.
     outboxMaxBytes: number;
+    /// M3.12 — JSON-RPC batching. `true` (default) enables viem's `wait: 0` batching: same-
+    /// tick concurrent requests collapse into one HTTP. Cuts the rps load on rate-limited
+    /// public endpoints (Monad testnet is 50 rps, 25 rps for `eth_call`). Set `false` for
+    /// debugging — single-request HTTPs make Wireshark / RPC-server logs easier to read.
+    rpcBatching: boolean;
+    /// M3.12 — HTTP request timeout in ms for every viem call (reads + sync tx sends).
+    /// Default 30000 (30 s). Bump for slow / contended RPCs; drop for snappier failure
+    /// detection in local-dev. Applies uniformly to public + wallet clients.
+    rpcTimeoutMs: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -118,6 +127,8 @@ Options:
   --venue-mirror-max-queued <n>    Drop-oldest cap on the venue mirror queue (default: 1024)
   --rate-limit-per-guest <n>       Per-guest spend cap, auth/sec/guest (default: ${DEFAULT_PER_GUEST_AUTH_PER_SEC})
   --outbox-max-bytes <n>           WAL byte cap before the writer truncates (default: ${DEFAULT_MAX_BYTES})
+  --rpc-batching <on|off>          JSON-RPC batching (default: on; coalesces same-tick concurrent calls)
+  --rpc-timeout-ms <n>             HTTP request timeout for every viem call (default: 30000)
   -h, --help                       Show this help
 
 Environment:
@@ -154,6 +165,8 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let venueMirrorMaxQueued = DEFAULT_VENUE_MIRROR_MAX_QUEUED;
     let rateLimitPerGuestAuthPerSec = DEFAULT_PER_GUEST_AUTH_PER_SEC;
     let outboxMaxBytes = DEFAULT_MAX_BYTES;
+    let rpcBatching = true;
+    let rpcTimeoutMs = 30_000;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -349,6 +362,24 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 outboxMaxBytes = n;
                 break;
             }
+            case "--rpc-batching": {
+                const raw = argv[++i];
+                if (raw === "on") rpcBatching = true;
+                else if (raw === "off") rpcBatching = false;
+                else throw new Error(`--rpc-batching must be 'on' or 'off', got ${String(raw)}`);
+                break;
+            }
+            case "--rpc-timeout-ms": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                // 100 ms floor to keep typos from disabling the transport entirely; 5 min
+                // ceiling to keep a stuck request from pinning the relayer slot indefinitely.
+                if (!Number.isInteger(n) || n < 100 || n > 300_000) {
+                    throw new Error(`--rpc-timeout-ms must be an integer in [100, 300000], got ${String(raw)}`);
+                }
+                rpcTimeoutMs = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -398,6 +429,8 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         venueMirrorMaxQueued,
         rateLimitPerGuestAuthPerSec,
         outboxMaxBytes,
+        rpcBatching,
+        rpcTimeoutMs,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;

@@ -3,7 +3,7 @@ import {existsSync} from "node:fs";
 import {dirname} from "node:path";
 import {mkdir} from "node:fs/promises";
 import {log as defaultLog, type Logger} from "../log.js";
-import {parseEvent, serializeEvent, type OutboxEvent} from "./types.js";
+import {parseEvent, serializeEvent, type OutboxEvent, type OutboxEventWithoutSeq} from "./types.js";
 
 /// Append-only WAL writer. The real producer is the game's background outbox-writer thread
 /// (M4.1); this TypeScript implementation is the test producer + a future home for any
@@ -96,7 +96,7 @@ export class OutboxWriter {
     /// If the resulting on-disk size would exceed `maxBytes`, the WAL is truncated *before*
     /// the new event is written — so the post-rotation file always contains at least the
     /// triggering event (rather than rotating away a freshly-written line).
-    async append(event: Omit<OutboxEvent, "seq">): Promise<number> {
+    async append(event: OutboxEventWithoutSeq): Promise<number> {
         if (!this.#fh) throw new Error(`OutboxWriter not open: ${this.#path}`);
         const seq = this.#nextSeq++;
         const full = {...event, seq} as OutboxEvent;

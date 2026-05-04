@@ -30,6 +30,16 @@ export type OutboxEvent =
 
 export type OutboxEventKind = OutboxEvent["kind"];
 
+/// `Omit<T, K>` doesn't distribute over unions — it returns the *intersection* of the
+/// per-branch shapes, dropping every discriminator-specific field. This distributive form
+/// preserves each branch independently, which is what callers like `OutboxWriter.append`
+/// actually want when they take a "seqless" event from a producer.
+export type OutboxEventWithoutSeq = OutboxEvent extends infer T
+    ? T extends OutboxEvent
+        ? Omit<T, "seq">
+        : never
+    : never;
+
 interface BaseEvent {
     /// Monotonic per-WAL sequence number. Starts at 0.
     seq: number;

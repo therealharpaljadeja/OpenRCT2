@@ -1,5 +1,6 @@
 import type {PublicClient, WalletClient} from "viem";
 import {FAUCET_ABI} from "./abis.js";
+import {confirmTx} from "./clients.js";
 
 /// Owner-side write surface for the Faucet contract. The faucet's `dripPark` and `dripMon`
 /// functions are `onlyOwner`, so the wallet client backing this writer must be the deployer
@@ -35,7 +36,12 @@ export function createFaucetWriter(opts: FaucetWriterOptions): FaucetWriter {
                 args: [to, amount],
                 account,
             });
-            return walletClient.writeContract(request);
+            const txHash = await walletClient.writeContract(request);
+            // M3.13 — `simulateContract` catches simulation-time reverts; this wait + status
+            // check catches execution-time reverts (e.g. mint role revoked between simulate
+            // and submit, or a chain reorg dropped the tx).
+            await confirmTx({publicClient, txHash, opName: "faucet.dripPark"});
+            return txHash;
         },
         dripMon: async (addrs, amounts) => {
             if (addrs.length !== amounts.length) {
@@ -49,7 +55,9 @@ export function createFaucetWriter(opts: FaucetWriterOptions): FaucetWriter {
                 args: [addrs as readonly `0x${string}`[], amounts as readonly bigint[]],
                 account,
             });
-            return walletClient.writeContract(request);
+            const txHash = await walletClient.writeContract(request);
+            await confirmTx({publicClient, txHash, opName: "faucet.dripMon"});
+            return txHash;
         },
     };
 }

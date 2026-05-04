@@ -43,8 +43,15 @@ export interface ViemSubmitterOptions {
     /// rejection. Set to 0 to refresh on every submit (test-time use).
     feeCacheMs?: number;
     /// Optional override for `sendRawTransactionSync` — exposed for tests so we don't need a
-    /// real RPC endpoint.
-    sendRawSync?: (serialized: `0x${string}`) => Promise<{txHash: Hex; blockNumber: bigint; gasUsed: bigint}>;
+    /// real RPC endpoint. `status` mirrors viem's `TransactionReceipt.status` ('success' |
+    /// 'reverted'); the submitter throws on `'reverted'` so the pool's terminal-failure
+    /// handler (M3.12) can do its job (sigNonce invalidation, metrics). M3.13.
+    sendRawSync?: (serialized: `0x${string}`) => Promise<{
+        txHash: Hex;
+        blockNumber: bigint;
+        gasUsed: bigint;
+        status: "success" | "reverted";
+    }>;
     /// Same idea for the fee fetch — tests inject deterministic fees.
     fetchFees?: () => Promise<{maxFeePerGas: bigint; maxPriorityFeePerGas: bigint}>;
     /// And for the nonce read. Production path uses `getTransactionCount({blockTag: "pending"})`.
@@ -99,6 +106,13 @@ export function createViemSubmitter(opts: ViemSubmitterOptions): RelayerSubmitte
             txHash: receipt.transactionHash,
             blockNumber: receipt.blockNumber,
             gasUsed: receipt.gasUsed,
+            // M3.13 — viem returns `status: 'success' | 'reverted'`. The submitter checks
+            // this in the `submit()` path below and throws on revert; the eth_sendRawTransactionSync
+            // RPC method does NOT itself reject on a reverted receipt (the chain returns the
+            // receipt with `status=0x0` and a successful HTTP 200), so without an explicit check
+            // here a reverted batch would register as confirmed in our metrics + the M3.12 sigNonce
+            // invalidation wouldn't fire.
+            status: receipt.status,
         };
     });
 
@@ -140,6 +154,19 @@ export function createViemSubmitter(opts: ViemSubmitterOptions): RelayerSubmitte
             try {
                 const receipt = await sendRawSyncImpl(serialized);
                 const latencyMs = now() - startedAt;
+                // M3.13 — `eth_sendRawTransactionSync` returns the *receipt* of an included tx,
+                // not the result of the EVM execution. A `transferFrom` revert (e.g. guest with
+                // 0 PARK / no permit), a `BadNonce`, a `VenueInactive` — all of these arrive
+                // back here with `status: 'reverted'` and an otherwise-normal receipt. Without
+                // this check the metrics layer treats them as confirmed batches and the M3.12
+                // sigNonce-invalidation cascade-recovery never fires. We throw with the tx hash
+                // in the message so an operator who sees the error can pull the on-chain reason
+                // from the block explorer.
+                if (receipt.status !== "success") {
+                    throw new Error(
+                        `settle reverted on chain: tx=${receipt.txHash} block=${receipt.blockNumber.toString()}`,
+                    );
+                }
                 log.debug(
                     {
                         relayer: account.address,

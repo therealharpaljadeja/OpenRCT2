@@ -47,6 +47,15 @@ function makeMocks(currentAllowance = 0n): {
             if (args.functionName === "allowance") return allowance;
             throw new Error(`unexpected readContract: ${args.functionName}`);
         },
+        async waitForTransactionReceipt(args: {hash: Hex}): Promise<{
+            status: "success" | "reverted";
+            blockNumber: bigint;
+            gasUsed: bigint;
+            transactionHash: Hex;
+        }> {
+            // M3.13 — funder now confirms receipts; mock returns success unless overridden.
+            return {status: "success", blockNumber: 1n, gasUsed: 0n, transactionHash: args.hash};
+        },
     } as unknown as PublicClient;
     return {
         walletClient,

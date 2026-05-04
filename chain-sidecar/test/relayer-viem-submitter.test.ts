@@ -96,6 +96,7 @@ test("submit encodes settle(auths, sigs) into the tx data", async () => {
                 txHash: ("0x" + "11".repeat(32)) as Hex,
                 blockNumber: 12345n,
                 gasUsed: 300_000n,
+                status: "success" as const,
             };
         },
         fetchFees: async () => ({maxFeePerGas: 1_000_000_000n, maxPriorityFeePerGas: 1_000_000n}),
@@ -141,7 +142,7 @@ test("submit returns the relayer's signature in the serialized tx (signature rec
         settlementBatcher: TEST_BATCHER,
         sendRawSync: async (serialized) => {
             captured.serialized = serialized;
-            return {txHash: ("0x" + "22".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 100_000n};
+            return {txHash: ("0x" + "22".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 100_000n, status: "success" as const};
         },
         fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
         fetchNonce: async () => 0,
@@ -165,7 +166,7 @@ test("submit returns wall-time as latencyMs", async () => {
     const submitter = createViemSubmitter({
         publicClient: fakePublicClient(),
         settlementBatcher: TEST_BATCHER,
-        sendRawSync: async () => ({txHash: ("0x" + "33".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n}),
+        sendRawSync: async () => ({txHash: ("0x" + "33".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n, status: "success" as const}),
         fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
         fetchNonce: async () => 0,
         now: () => {
@@ -232,7 +233,7 @@ test("fee snapshot is cached for feeCacheMs and refreshed thereafter", async () 
         publicClient: fakePublicClient(),
         settlementBatcher: TEST_BATCHER,
         feeCacheMs: 1000,
-        sendRawSync: async () => ({txHash: ("0x" + "44".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n}),
+        sendRawSync: async () => ({txHash: ("0x" + "44".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n, status: "success" as const}),
         fetchFees: async () => {
             fetchCount++;
             return {maxFeePerGas: 1n, maxPriorityFeePerGas: 1n};
@@ -272,7 +273,7 @@ test("gas budget scales with auth count: base + perAuth*N", async () => {
         perAuthGas: 40_000n,
         sendRawSync: async (serialized) => {
             captured = serialized;
-            return {txHash: ("0x" + "55".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n};
+            return {txHash: ("0x" + "55".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n, status: "success" as const};
         },
         fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
         fetchNonce: async () => 0,
@@ -294,7 +295,7 @@ test("calldata digest is stable across runs (acts as a regression guard for ABI 
         settlementBatcher: TEST_BATCHER,
         sendRawSync: async (serialized) => {
             captured = serialized;
-            return {txHash: ("0x" + "66".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n};
+            return {txHash: ("0x" + "66".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n, status: "success" as const};
         },
         fetchFees: async () => ({maxFeePerGas: 0n, maxPriorityFeePerGas: 0n}),
         fetchNonce: async () => 0,
@@ -311,7 +312,7 @@ test("calldata digest is stable across runs (acts as a regression guard for ABI 
         settlementBatcher: TEST_BATCHER,
         sendRawSync: async (serialized) => {
             captured2 = serialized;
-            return {txHash: ("0x" + "77".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n};
+            return {txHash: ("0x" + "77".repeat(32)) as Hex, blockNumber: 1n, gasUsed: 0n, status: "success" as const};
         },
         fetchFees: async () => ({maxFeePerGas: 0n, maxPriorityFeePerGas: 0n}),
         fetchNonce: async () => 0,
@@ -320,4 +321,82 @@ test("calldata digest is stable across runs (acts as a regression guard for ABI 
     await submitter2.submit({account: relayer.account, nonce: 0, batch: fakeBatch(1)});
     const parsed2 = parseTransaction(captured2!);
     assert.equal(keccak256(parsed2.data!), dataDigest, "calldata is deterministic for fixed inputs");
+});
+
+// ---- M3.13 — receipt.status check ----
+
+test("M3.13: throws on receipt.status === 'reverted' even though sendRawSync resolved", async () => {
+    const [relayer] = relayerPool(TEST_MNEMONIC, 1);
+    assert.ok(relayer);
+    const submitter = createViemSubmitter({
+        publicClient: fakePublicClient(),
+        settlementBatcher: TEST_BATCHER,
+        sendRawSync: async () => ({
+            // Even though the RPC happily returned a receipt, the EVM reverted (e.g. a
+            // `transferFrom` of 0-balance guest, BadNonce, VenueInactive). Without the M3.13
+            // check this would land in throughput.totals.authSubmitted as a confirmed batch.
+            txHash: ("0x" + "ee".repeat(32)) as Hex,
+            blockNumber: 99n,
+            gasUsed: 50_000n,
+            status: "reverted" as const,
+        }),
+        fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
+        fetchNonce: async () => 0,
+    });
+    await assert.rejects(
+        () => submitter.submit({account: relayer.account, nonce: 0, batch: fakeBatch()}),
+        (err: Error) => {
+            assert.match(err.message, /reverted on chain/);
+            // The error includes the tx hash so an operator can pull the on-chain reason.
+            assert.match(err.message, /0x(ee){32}/);
+            assert.match(err.message, /block=99/);
+            return true;
+        },
+    );
+});
+
+test("M3.13: receipt.status revert is NOT classified as a nonce error (must surface to terminal failure)", async () => {
+    const [relayer] = relayerPool(TEST_MNEMONIC, 1);
+    assert.ok(relayer);
+    const submitter = createViemSubmitter({
+        publicClient: fakePublicClient(),
+        settlementBatcher: TEST_BATCHER,
+        sendRawSync: async () => ({
+            txHash: ("0x" + "ff".repeat(32)) as Hex,
+            blockNumber: 1n,
+            gasUsed: 0n,
+            status: "reverted" as const,
+        }),
+        fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
+        fetchNonce: async () => 0,
+    });
+    await assert.rejects(
+        () => submitter.submit({account: relayer.account, nonce: 0, batch: fakeBatch()}),
+        (err: Error) => {
+            // The pool's `isNonceError` regex must not match this — a reverted batch is a
+            // terminal failure, not a "refresh the nonce and retry" case.
+            assert.ok(!isNonceError(err), "reverted receipt must not look like a nonce error");
+            return true;
+        },
+    );
+});
+
+test("M3.13: receipt.status === 'success' returns normally", async () => {
+    const [relayer] = relayerPool(TEST_MNEMONIC, 1);
+    assert.ok(relayer);
+    const submitter = createViemSubmitter({
+        publicClient: fakePublicClient(),
+        settlementBatcher: TEST_BATCHER,
+        sendRawSync: async () => ({
+            txHash: ("0x" + "aa".repeat(32)) as Hex,
+            blockNumber: 7n,
+            gasUsed: 200_000n,
+            status: "success" as const,
+        }),
+        fetchFees: async () => ({maxFeePerGas: 1n, maxPriorityFeePerGas: 1n}),
+        fetchNonce: async () => 0,
+    });
+    const result = await submitter.submit({account: relayer.account, nonce: 0, batch: fakeBatch()});
+    assert.equal(result.blockNumber, 7n);
+    assert.equal(result.gasUsed, 200_000n);
 });

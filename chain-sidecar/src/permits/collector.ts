@@ -1,5 +1,6 @@
-import {encodeFunctionData, type Hex, type WalletClient} from "viem";
+import {encodeFunctionData, type Hex, type PublicClient, type WalletClient} from "viem";
 import {PARK_TOKEN_ABI, PARK_TREASURY_ABI} from "../chain/abis.js";
+import {submitAndConfirm} from "../chain/clients.js";
 import {log as defaultLog, type Logger} from "../log.js";
 import type {SignedPermit} from "./sign.js";
 
@@ -28,6 +29,12 @@ export type PermitFlushReason = "size" | "age" | "manual" | "stop";
 
 export interface PermitCollectorOptions {
     walletClient: WalletClient;
+    /// M3.13 — needed to wait for tx receipts and check `status === 'success'`. Without it,
+    /// silent on-chain reverts (e.g. a guest's permit landing after their sigNonce on
+    /// SettlementBatcher's permit nonce mapping has already been consumed by another tx)
+    /// would register as flushed batches and the misalignment would only show up when the
+    /// settle's transferFrom reverts later.
+    publicClient: PublicClient;
     treasury: `0x${string}`;
     parkToken: `0x${string}`;
     /// Defaults match plan §4.4 (200 entries / 200 ms) so the funder + permit windows run on
@@ -67,6 +74,7 @@ export interface PermitCollectorStats {
 
 export class PermitCollector {
     readonly #walletClient: WalletClient;
+    readonly #publicClient: PublicClient;
     readonly #treasury: `0x${string}`;
     readonly #parkToken: `0x${string}`;
     readonly #log: Logger;
@@ -117,6 +125,7 @@ export class PermitCollector {
         validateMaxQueued(maxQueuedPermits);
 
         this.#walletClient = opts.walletClient;
+        this.#publicClient = opts.publicClient;
         this.#treasury = opts.treasury;
         this.#parkToken = opts.parkToken;
         this.#log = (opts.log ?? defaultLog).child({mod: "permits"});
@@ -253,14 +262,15 @@ export class PermitCollector {
     }
 
     async #sendTreasuryCall(data: Hex): Promise<Hex> {
-        const account = this.#walletClient.account!;
-        const chain = this.#walletClient.chain ?? null;
-        return this.#walletClient.sendTransaction({
-            account,
-            chain,
-            to: this.#treasury,
-            data,
-            value: 0n,
+        // M3.13 + M3.16 — `submitAndConfirm` wraps sendTransaction + receipt-status + retry on
+        // Monad mempool-lag insufficient-balance errors. Without the retry, the permit
+        // collector's first window-flush from a freshly-funded operator EOA reliably fails.
+        return submitAndConfirm({
+            walletClient: this.#walletClient,
+            publicClient: this.#publicClient,
+            request: {to: this.#treasury, data, value: 0n},
+            opName: "permits.treasury.executeBatch",
+            log: this.#log,
         });
     }
 }

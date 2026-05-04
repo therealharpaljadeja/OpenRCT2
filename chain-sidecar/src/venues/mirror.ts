@@ -1,7 +1,6 @@
 import {
     BaseError,
     ContractFunctionRevertedError,
-    encodeFunctionData,
     getCreate2Address,
     keccak256,
     pad,
@@ -10,6 +9,7 @@ import {
     type WalletClient,
 } from "viem";
 import {VENUE_REGISTRY_ABI} from "../chain/abis.js";
+import {confirmTx} from "../chain/clients.js";
 import {log as defaultLog, type Logger} from "../log.js";
 
 /// VenueMirror (plan §3.1 / §4.5 / M3.8).
@@ -283,35 +283,10 @@ export class VenueMirror {
     }
 
     async #processOne(event: VenueMirrorEvent): Promise<void> {
-        let data: Hex;
-        switch (event.kind) {
-            case "register":
-                data = encodeFunctionData({
-                    abi: VENUE_REGISTRY_ABI,
-                    functionName: "register",
-                    args: [event.venueId, event.venueKind, event.name, event.objectType],
-                });
-                break;
-            case "rename":
-                data = encodeFunctionData({
-                    abi: VENUE_REGISTRY_ABI,
-                    functionName: "rename",
-                    args: [event.venueId, event.newName],
-                });
-                break;
-            case "remove":
-                data = encodeFunctionData({
-                    abi: VENUE_REGISTRY_ABI,
-                    functionName: "remove",
-                    args: [event.venueId],
-                });
-                break;
-        }
-
         this.#inFlight++;
         const startedAt = this.#now();
         try {
-            const tx = await this.#sendCall(data);
+            const tx = await this.#sendCall(event);
             this.#lastTxHash = tx;
             this.#lastSubmitLatencyMs = this.#now() - startedAt;
             this.#submitted++;
@@ -369,16 +344,63 @@ export class VenueMirror {
         }
     }
 
-    async #sendCall(data: Hex): Promise<Hex> {
+    /// M3.15 — submit via `simulateContract → writeContract + confirmTx`. The simulate step
+    /// catches the three idempotent reverts (`AlreadyRegistered` / `NotRegistered` /
+    /// `AlreadyInactive`) as a structured `ContractFunctionRevertedError`, which
+    /// `isAlreadyAppliedError` walks to classify them as `skippedAlreadyApplied` rather than
+    /// `rpcErrors`. Execution-time reverts (the chain accepted the tx, executed it, reverted)
+    /// surface from `confirmTx` as a generic Error and bump `rpcErrors` — exactly the M3.13
+    /// silent-revert fix the other write paths got.
+    async #sendCall(event: VenueMirrorEvent): Promise<Hex> {
         const account = this.#walletClient.account!;
-        const chain = this.#walletClient.chain ?? null;
-        return this.#walletClient.sendTransaction({
-            account,
-            chain,
-            to: this.#venueRegistry,
-            data,
-            value: 0n,
-        });
+        const chain = this.#walletClient.chain ?? undefined;
+        const opName = `venue.${event.kind}`;
+        // Each branch builds a viem `simulateContract` arg shape with the function-specific
+        // tuple. Typed via `Parameters<...>[0]` casts at the call site — the abi-narrowed
+        // overloads in viem make a single typed `simulateArgs` variable too tight to express
+        // across three different functions, and the cost (lose compile-time arg-tuple
+        // checking on three string-literal call sites) is dwarfed by the contract test suite.
+        let txHash: Hex;
+        switch (event.kind) {
+            case "register": {
+                const {request} = await this.#publicClient.simulateContract({
+                    address: this.#venueRegistry,
+                    abi: VENUE_REGISTRY_ABI,
+                    functionName: "register",
+                    args: [event.venueId, event.venueKind, event.name, event.objectType],
+                    account,
+                    chain,
+                });
+                txHash = await this.#walletClient.writeContract(request);
+                break;
+            }
+            case "rename": {
+                const {request} = await this.#publicClient.simulateContract({
+                    address: this.#venueRegistry,
+                    abi: VENUE_REGISTRY_ABI,
+                    functionName: "rename",
+                    args: [event.venueId, event.newName],
+                    account,
+                    chain,
+                });
+                txHash = await this.#walletClient.writeContract(request);
+                break;
+            }
+            case "remove": {
+                const {request} = await this.#publicClient.simulateContract({
+                    address: this.#venueRegistry,
+                    abi: VENUE_REGISTRY_ABI,
+                    functionName: "remove",
+                    args: [event.venueId],
+                    account,
+                    chain,
+                });
+                txHash = await this.#walletClient.writeContract(request);
+                break;
+            }
+        }
+        await confirmTx({publicClient: this.#publicClient, txHash, opName});
+        return txHash;
     }
 }
 

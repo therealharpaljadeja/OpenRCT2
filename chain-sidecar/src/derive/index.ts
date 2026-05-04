@@ -2,21 +2,25 @@ import {mnemonicToAccount, type HDAccount} from "viem/accounts";
 
 /// HD derivation off the park master mnemonic. M2.2 lands the basic derivation surface and the
 /// relayer pool; M2.3 adds an address cache so the batcher can attach a guest's address without
-/// re-deriving on every spend.
+/// re-deriving on every spend; M3.14 adds the operator role for per-subsystem admin EOAs.
 ///
 /// BIP-44 path layout (`OpenRCT2/ONCHAIN_PLAN.md` §2.1):
 ///
 ///   m / 44' / 60' / 0' / change / index
 ///                       ^^^^^^^   ^^^^^
-///                       0=guest   guestIdx (M2.3+)
-///                       1=relayer relayerIdx (this milestone)
+///                       0=guest    guestIdx (M2.3+)
+///                       1=relayer  relayerIdx (M2.2)
+///                       2=operator opIdx (M3.14 — funder/permits/sweeper)
 ///
-/// Splitting guests and relayers under different `change` indices means a guest and a relayer
-/// can never share an address by accident, and a future role (e.g. dedicated faucet drainer)
-/// can claim its own change index without colliding.
+/// Splitting roles under different `change` indices means addresses across roles can never
+/// collide by accident. M3.14 adds the operator role: a small set of EOAs (one per high-volume
+/// admin subsystem) authorized by `ParkTreasury.addOperator(...)` to call `execute` /
+/// `executeBatch` without contending on the deployer's nonce sequence. Funder = idx 0,
+/// permits = idx 1, sweeper = idx 2 (mirrors the `OPERATOR_*` enum below).
 
 export const CHANGE_GUEST = 0;
 export const CHANGE_RELAYER = 1;
+export const CHANGE_OPERATOR = 2;
 
 export interface DerivedAccount {
     /// HD path relative to the park master mnemonic — useful for explorer / debug.
@@ -62,5 +66,36 @@ export function relayerPool(mnemonic: string, count: number): DerivedAccount[] {
     }
     const out: DerivedAccount[] = [];
     for (let i = 0; i < count; i++) out.push(deriveRelayer(mnemonic, i));
+    return out;
+}
+
+/// M3.14 — per-subsystem operator EOAs. Each high-volume admin subsystem (funder, permit
+/// collector, sweeper) gets its own key so the three can submit `treasury.execute` /
+/// `executeBatch` calls in parallel without colliding on a single shared deployer-nonce
+/// sequence. Authorized on chain via `ParkTreasury.addOperator(addr)` once at sidecar boot.
+///
+/// The role enum is the canonical name → idx mapping; consumers should use these constants
+/// instead of magic numbers so a future re-shuffle (e.g. inserting a "lendingPool" operator)
+/// only touches this file.
+export const OPERATOR_FUNDER = 0;
+export const OPERATOR_PERMITS = 1;
+export const OPERATOR_SWEEPER = 2;
+export const OPERATOR_COUNT = 3;
+
+export function deriveOperator(mnemonic: string, index: number): DerivedAccount {
+    if (!Number.isInteger(index) || index < 0) throw new Error(`invalid operator index: ${index}`);
+    const account = mnemonicToAccount(mnemonic, {
+        accountIndex: 0,
+        changeIndex: CHANGE_OPERATOR,
+        addressIndex: index,
+    });
+    return {path: `m/44'/60'/0'/${CHANGE_OPERATOR}/${index}`, address: account.address, account};
+}
+
+/// Materialize all three operator accounts in canonical order. The returned array maps
+/// `OPERATOR_FUNDER` → idx 0, etc. so callers can index by role constant.
+export function operatorPool(mnemonic: string): DerivedAccount[] {
+    const out: DerivedAccount[] = [];
+    for (let i = 0; i < OPERATOR_COUNT; i++) out.push(deriveOperator(mnemonic, i));
     return out;
 }
