@@ -13,6 +13,11 @@
 #include "../Context.h"
 #include "../Diagnostic.h"
 #include "../GameState.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../OpenRCT2.h"
+    #include "../chain/Outbox.h"
+    #include "../object/RideObject.h"
+#endif
 #include "../core/Memory.hpp"
 #include "../core/MemoryStream.h"
 #include "../localisation/Localisation.Date.h"
@@ -295,6 +300,45 @@ namespace OpenRCT2::GameActions
 
         res.Expenditure = ExpenditureType::rideConstruction;
         res.SetData(RideId{ rideIndex });
+
+#ifdef OPENRCT2_CHAIN
+        if (gOpenRCT2ChainEnabled)
+        {
+            if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+            {
+                OpenRCT2::Chain::VenueKind kind = OpenRCT2::Chain::VenueKind::Ride;
+                switch (rtd.ColourKey)
+                {
+                    case RideColourKey::Food:
+                    case RideColourKey::Drink:
+                        kind = OpenRCT2::Chain::VenueKind::Stall;
+                        break;
+                    case RideColourKey::Shop:
+                        kind = OpenRCT2::Chain::VenueKind::Shop;
+                        break;
+                    case RideColourKey::InfoKiosk:
+                    case RideColourKey::FirstAid:
+                    case RideColourKey::Toilets:
+                        kind = OpenRCT2::Chain::VenueKind::Facility;
+                        break;
+                    case RideColourKey::CashMachine:
+                        kind = OpenRCT2::Chain::VenueKind::ATM;
+                        break;
+                    case RideColourKey::Ride:
+                    default:
+                        kind = OpenRCT2::Chain::VenueKind::Ride;
+                        break;
+                }
+                std::string_view objectId;
+                auto* rideObj
+                    = OpenRCT2::GetContext()->GetObjectManager().GetLoadedObject<RideObject>(rideEntryIndex);
+                if (rideObj != nullptr)
+                    objectId = rideObj->GetIdentifier();
+                outbox->PushVenueRegistered(
+                    static_cast<uint32_t>(rideIndex.ToUnderlying()) + 1u, kind, ride->getName(), objectId);
+            }
+        }
+#endif
 
         return res;
     }
