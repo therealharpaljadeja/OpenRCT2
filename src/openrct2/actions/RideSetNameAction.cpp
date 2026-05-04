@@ -12,6 +12,10 @@
 #include "../Cheats.h"
 #include "../Context.h"
 #include "../Diagnostic.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../OpenRCT2.h"
+    #include "../chain/Outbox.h"
+#endif
 #include "../core/MemoryStream.h"
 #include "../drawing/Drawing.h"
 #include "../localisation/StringIds.h"
@@ -93,6 +97,17 @@ namespace OpenRCT2::GameActions
         auto res = Result();
         auto location = ride->overallView.ToTileCentre();
         res.Position = { location, TileElementHeight(location) };
+
+#ifdef OPENRCT2_CHAIN
+        if (gOpenRCT2ChainEnabled)
+        {
+            if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+            {
+                outbox->PushVenueRenamed(
+                    static_cast<uint32_t>(_rideIndex.ToUnderlying()) + 1u, ride->getName());
+            }
+        }
+#endif
 
         return res;
     }

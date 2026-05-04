@@ -13,6 +13,10 @@
 #include "../Context.h"
 #include "../Diagnostic.h"
 #include "../GameState.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../OpenRCT2.h"
+    #include "../chain/Outbox.h"
+#endif
 #include "../core/MemoryStream.h"
 #include "../drawing/Drawing.h"
 #include "../entity/EntityList.h"
@@ -173,6 +177,16 @@ namespace OpenRCT2::GameActions
 
         ScrollingTextInvalidate();
         GfxInvalidateScreen();
+
+#ifdef OPENRCT2_CHAIN
+        if (gOpenRCT2ChainEnabled)
+        {
+            if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+            {
+                outbox->PushVenueRemoved(static_cast<uint32_t>(rideId.ToUnderlying()) + 1u);
+            }
+        }
+#endif
 
         return res;
     }
