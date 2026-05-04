@@ -718,6 +718,16 @@ void PeepEntityRemove(Peep* peep)
 
         News::DisableNewsItems(News::ItemType::peep, staff->Id.ToUnderlying());
     }
+#ifdef OPENRCT2_CHAIN
+    if (gOpenRCT2ChainEnabled && guest != nullptr)
+    {
+        if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+        {
+            outbox->PushGuestExit(peep->Id.ToUnderlying(), guest->HdIndex);
+        }
+    }
+#endif
+
     getGameState().entities.EntityRemove(peep);
 
     auto intent = Intent(wasGuest ? INTENT_ACTION_REFRESH_GUEST_LIST : INTENT_ACTION_REFRESH_STAFF_LIST);
