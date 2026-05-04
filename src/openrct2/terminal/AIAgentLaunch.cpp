@@ -9,6 +9,11 @@
 
 #include "AIAgentLaunch.h"
 
+#ifdef OPENRCT2_CHAIN
+    #include "../OpenRCT2.h"
+    #include "../chain/Runtime.h"
+#endif
+
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -522,6 +527,23 @@ namespace OpenRCT2::Terminal
         plan.options.environment.emplace_back("AGENT_WORKSPACE=" + plan.options.workingDirectory);
 
         PublishWorkspaceTool(workspace, *rctctlPath, "rctctl");
+
+#ifdef OPENRCT2_CHAIN
+        // Auto-spawn the chain sidecar (plan §M4.10). Chain mode is opt-in via --chain at
+        // game start; if it's off we skip silently. Failure here is non-fatal — the agent
+        // launch continues and the chain hooks no-op (Chain::GetOutbox returns nullptr).
+        if (gOpenRCT2ChainEnabled)
+        {
+            OpenRCT2::Chain::RuntimeOptions chainOpts;
+            chainOpts.repoRoot = *repoRoot;
+            chainOpts.workspace = workspace;
+            std::string chainErr;
+            if (!OpenRCT2::Chain::EnsureRuntime(chainOpts, chainErr))
+            {
+                LOG_WARNING("AIAgentLaunch: chain runtime not started: %s", chainErr.c_str());
+            }
+        }
+#endif
 
         // Prepare session log file for capturing full terminal output
         auto sessionLogFile = PrepareSessionLogFile(repoRoot);
