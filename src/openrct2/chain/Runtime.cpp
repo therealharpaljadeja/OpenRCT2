@@ -18,7 +18,9 @@
     #include <cstdlib>
     #include <memory>
     #include <mutex>
+    #include <string>
     #include <system_error>
+    #include <unistd.h>
 
 namespace OpenRCT2::Chain
 {
@@ -36,13 +38,46 @@ namespace OpenRCT2::Chain
             return repoRoot / "chain-sidecar" / "dist" / "main.js";
         }
 
-        std::string FindNodeBinary()
+        // Resolve `name` to an absolute executable path. `execve` (which we use post-fork)
+        // does *not* search PATH — passing a bare "node" silently fails with _exit(127) and
+        // produces no diagnostic. We resolve here, on the parent side, so missing-node
+        // surfaces as a normal `EnsureRuntime` error.
+        std::string LookupExecutable(const std::string& name)
         {
-            // Don't try to locate Node ourselves — relying on $PATH is the same contract the
-            // CMake `chain-sidecar` target uses (it skips with a notice when node/npm aren't
-            // on PATH). Returning the bare name and letting execve(PATH=...) resolve keeps
-            // us consistent with what the user already had to set up to build.
-            return "node";
+            if (name.find('/') != std::string::npos)
+                return name;
+
+            if (const char* pathEnv = std::getenv("PATH"); pathEnv != nullptr)
+            {
+                std::string path = pathEnv;
+                std::size_t start = 0;
+                while (start <= path.size())
+                {
+                    std::size_t end = path.find(':', start);
+                    if (end == std::string::npos)
+                        end = path.size();
+                    std::string segment = path.substr(start, end - start);
+                    if (!segment.empty())
+                    {
+                        auto candidate = std::filesystem::path(segment) / name;
+                        if (::access(candidate.c_str(), X_OK) == 0)
+                            return candidate.string();
+                    }
+                    if (end == path.size())
+                        break;
+                    start = end + 1;
+                }
+            }
+
+            // GUI launches on macOS often inherit a bare PATH (`/usr/bin:/bin`). Fall back
+            // to the standard Homebrew + system locations so a double-click .app launch
+            // still finds Node.
+            for (const char* p : { "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node" })
+            {
+                if (::access(p, X_OK) == 0)
+                    return p;
+            }
+            return {};
         }
     } // namespace
 
@@ -104,12 +139,21 @@ namespace OpenRCT2::Chain
             gOutboxStarted = true;
         }
 
+        // ---- Resolve node before fork — `execve` does no PATH search.
+        const auto nodeBin = LookupExecutable("node");
+        if (nodeBin.empty())
+        {
+            errorOut = "chain runtime: `node` not found in PATH or standard install locations "
+                       "(/opt/homebrew/bin, /usr/local/bin, /usr/bin)";
+            return false;
+        }
+
         // ---- Build sidecar argv. Mirrors the flags introduced across M2.x / M3.x.
         SidecarProcess::Options spawnOpts;
         spawnOpts.workingDirectory = opts.repoRoot.string();
         spawnOpts.logFilePath = sidecarLogPath.string();
         spawnOpts.argv = {
-            FindNodeBinary(),
+            nodeBin,
             sidecarEntry.string(),
             "--socket", socketPath.string(),
             "--outbox", walPath.string(),
