@@ -90,6 +90,12 @@ namespace OpenRCT2::Chain
         // Returns false on I/O error.
         bool Start();
 
+        // Hand out a fresh BIP-32 HD derivation index for a new guest. Monotonic across the
+        // lifetime of this Outbox instance (resets on Start). The sidecar derives the
+        // guest's wallet from this index against the master mnemonic — so within a single
+        // park run, every guest gets a unique on-chain identity.
+        uint32_t AllocateHdIndex();
+
         // Signal the writer thread to drain and exit; close the WAL.
         void Stop();
 

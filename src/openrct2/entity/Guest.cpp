@@ -14,6 +14,10 @@
 #include "../Game.h"
 #include "../GameState.h"
 #include "../OpenRCT2.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../chain/Money.h"
+    #include "../chain/Outbox.h"
+#endif
 #include "../SpriteIds.h"
 #include "../audio/Audio.h"
 #include "../config/Config.h"
@@ -7455,6 +7459,18 @@ Guest* Guest::Generate(const CoordsXYZ& coords)
         // Call the subscriptions
         auto e = obj.Take();
         hookEngine.Call(OpenRCT2::Scripting::HookType::guestGeneration, e, true);
+    }
+#endif
+
+#ifdef OPENRCT2_CHAIN
+    if (gOpenRCT2ChainEnabled)
+    {
+        if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+        {
+            peep->HdIndex = outbox->AllocateHdIndex();
+            outbox->PushGuestEntry(
+                peep->Id.ToUnderlying(), peep->HdIndex, OpenRCT2::Chain::GameMoneyToWei(peep->CashInPocket));
+        }
     }
 #endif
 

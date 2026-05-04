@@ -336,6 +336,7 @@ namespace OpenRCT2::Chain
 
         // Producer-only: monotonic seq + counters.
         std::atomic<uint64_t> nextSeq{ 0 };
+        std::atomic<uint32_t> nextHdIndex{ 0 };
         std::atomic<uint64_t> pushed{ 0 };
         std::atomic<uint64_t> dropped{ 0 };
 
@@ -669,6 +670,11 @@ namespace OpenRCT2::Chain
             static_cast<unsigned long long>(_impl->written.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(_impl->dropped.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(_impl->writeErrors.load(std::memory_order_relaxed)));
+    }
+
+    uint32_t Outbox::AllocateHdIndex()
+    {
+        return _impl->nextHdIndex.fetch_add(1, std::memory_order_relaxed);
     }
 
     void Outbox::PushGuestEntry(int32_t guestId, uint32_t hdIndex, uint64_t cashWei)
