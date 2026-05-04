@@ -27,6 +27,10 @@
         #include <unistd.h>
         #include <vector>
 
+// macOS doesn't expose `environ` via <unistd.h> the way Linux does — POSIX guarantees the
+// symbol exists, but you have to declare it yourself before use.
+extern "C" char** environ;
+
 namespace OpenRCT2::Chain
 {
     namespace
