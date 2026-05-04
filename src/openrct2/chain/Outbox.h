@@ -40,6 +40,15 @@ namespace OpenRCT2::Chain
         AtmFee = 5,
     };
 
+    // Venue-id convention shared by producers (M4.4–M4.8) and the on-chain VenueRegistry:
+    //   - 0 is the park entrance (registered once at park init, plan §3.2).
+    //   - Any other venue's id is its game-side `RideId` underlying + 1 (so RideId 0 doesn't
+    //     collide with the entrance sentinel). Caller does the +1.
+    //   - UINT32_MAX is a producer-side sentinel meaning "no venue here, don't emit"; never
+    //     transmitted on the wire.
+    inline constexpr uint32_t kVenueIdEntrance = 0;
+    inline constexpr uint32_t kVenueIdNone = 0xFFFFFFFFu;
+
     struct OutboxOptions
     {
         std::string walPath;

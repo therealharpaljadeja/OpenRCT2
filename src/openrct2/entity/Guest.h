@@ -343,8 +343,8 @@ public:
     bool HeadingForRideOrParkExit() const;
     void ReadMap();
     bool ShouldGoOnRide(Ride& ride, StationIndex entranceNum, bool atQueue, bool thinking);
-    void SpendMoney(money64& peep_expend_type, money64 amount, ExpenditureType type);
-    void SpendMoney(money64 amount, ExpenditureType type);
+    void SpendMoney(money64& peep_expend_type, money64 amount, ExpenditureType type, uint32_t venueId);
+    void SpendMoney(money64 amount, ExpenditureType type, uint32_t venueId);
     void SetHasRidden(const Ride& ride);
     bool HasRidden(const Ride& ride) const;
     void SetHasRiddenRideType(ride_type_t rideType);
