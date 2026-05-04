@@ -15,6 +15,10 @@
 #include "../ride/ShopItem.h"
 #include "Peep.h"
 
+#ifdef OPENRCT2_CHAIN
+    #include "../chain/EthAddress.h"
+#endif
+
 constexpr int8_t kPeepMaxThoughts = 5;
 
 constexpr int8_t kPeepHungerWarningThreshold = 25;
@@ -319,6 +323,14 @@ public:
     RideId FavouriteRide;
     uint8_t FavouriteRideRating;
     uint64_t ItemFlags;
+
+#ifdef OPENRCT2_CHAIN
+    // Per-guest on-chain identity (plan §5.1). Runtime-only — deliberately not serialized
+    // to save files. Each park run starts with fresh wallets; HdIndex is assigned on
+    // SpawnGuest, OnchainAddress is filled in once the sidecar acks the assignment.
+    uint32_t HdIndex{ 0 };
+    OpenRCT2::Chain::EthAddress OnchainAddress{};
+#endif
 
     void Update();
     void Tick128UpdateGuest(uint32_t index);

@@ -7379,6 +7379,14 @@ Guest* Guest::Generate(const CoordsXYZ& coords)
     peep->PeepId = gameState.nextGuestNumber++;
     peep->Name = nullptr;
 
+#ifdef OPENRCT2_CHAIN
+    // Reset chain identity on slot reuse — entity slots are recycled, so a guest spawning
+    // into a slot that previously held a different guest would otherwise inherit the prior
+    // wallet. M4.3 will assign HdIndex from the sidecar; OnchainAddress arrives later.
+    peep->HdIndex = 0;
+    peep->OnchainAddress = OpenRCT2::Chain::EthAddress{};
+#endif
+
     money64 cash = (static_cast<money64>(ScenarioRand() & 0x3) * 100) - 100 + gameState.scenarioOptions.guestInitialCash;
     if (cash < 0)
         cash = 0;
