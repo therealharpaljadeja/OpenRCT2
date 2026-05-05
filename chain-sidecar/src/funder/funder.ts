@@ -112,6 +112,11 @@ export class Funder {
     #acceptedAt: number[] = [];
     #ageTimer: ReturnType<typeof setTimeout> | undefined;
     readonly #pending = new Set<Promise<void>>();
+    /// Per-operator submission chain. Serializes `#sendTreasuryCall` so concurrent windows
+    /// (size + age triggering close together) don't race on viem's auto-nonce — without this,
+    /// the second submit hits Monad's "An existing transaction had higher priority" because
+    /// `getTransactionCount` returns the same value for both calls.
+    #submitChain: Promise<unknown> = Promise.resolve();
 
     #started = false;
     #stopped = false;
@@ -353,13 +358,24 @@ export class Funder {
     /// error class so the funder's first window-flush (when the operator EOA is freshly
     /// funded) doesn't fail on the RPC node's stale view of the operator's balance.
     async #sendTreasuryCall(data: Hex): Promise<Hex> {
-        return submitAndConfirm({
-            walletClient: this.#walletClient,
-            publicClient: this.#publicClient,
-            request: {to: this.#treasury, data, value: 0n},
-            opName: "funder.treasury.execute",
-            log: this.#log,
-        });
+        const prev = this.#submitChain;
+        const result = (async () => {
+            await prev.catch(() => undefined);
+            return submitAndConfirm({
+                walletClient: this.#walletClient,
+                publicClient: this.#publicClient,
+                request: {to: this.#treasury, data, value: 0n},
+                opName: "funder.treasury.execute",
+                log: this.#log,
+            });
+        })();
+        // Continue the chain regardless of success/failure — a thrown submit shouldn't
+        // permanently break the next flush.
+        this.#submitChain = result.then(
+            () => undefined,
+            () => undefined,
+        );
+        return result;
     }
 }
 

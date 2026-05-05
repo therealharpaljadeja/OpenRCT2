@@ -128,6 +128,9 @@ export class Sweeper {
     #acceptedAt: number[] = [];
     #ageTimer: ReturnType<typeof setTimeout> | undefined;
     readonly #pending = new Set<Promise<void>>();
+    /// Per-operator submission chain — see Funder for rationale. Serializes admin-tx sends
+    /// from this subsystem so viem's auto-nonce doesn't race when two windows close at once.
+    #submitChain: Promise<unknown> = Promise.resolve();
 
     #stopped = false;
     #accepted = 0;
@@ -409,13 +412,22 @@ export class Sweeper {
 
     async #sendTreasuryCall(data: Hex): Promise<Hex> {
         // M3.13 + M3.16 — submit + receipt-status + retry on Monad mempool-lag errors.
-        return submitAndConfirm({
-            walletClient: this.#walletClient,
-            publicClient: this.#publicClient,
-            request: {to: this.#treasury, data, value: 0n},
-            opName: "sweeper.treasury.executeBatch",
-            log: this.#log,
-        });
+        const prev = this.#submitChain;
+        const result = (async () => {
+            await prev.catch(() => undefined);
+            return submitAndConfirm({
+                walletClient: this.#walletClient,
+                publicClient: this.#publicClient,
+                request: {to: this.#treasury, data, value: 0n},
+                opName: "sweeper.treasury.executeBatch",
+                log: this.#log,
+            });
+        })();
+        this.#submitChain = result.then(
+            () => undefined,
+            () => undefined,
+        );
+        return result;
     }
 }
 

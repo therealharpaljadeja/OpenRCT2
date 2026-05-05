@@ -323,6 +323,72 @@ test("rpc errors increment rpcErrors and don't crash the queue", async () => {
     assert.equal(funder.stats().flushedEntries, 1);
 });
 
+test("concurrent flushes serialize: second sendTransaction waits for first to resolve", async () => {
+    // Repro for the M3.x nonce-race fix: when two windows close at once (size + age, or two
+    // size triggers in quick succession), viem's auto-nonce called from two parallel
+    // `sendTransaction`s would pick up the same `getTransactionCount` and the second submit
+    // would hit "An existing transaction had higher priority" on Monad. The funder's
+    // `#submitChain` ensures only one submit is in flight per operator.
+    const sent: SentTx[] = [];
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((r) => {
+        releaseFirst = r;
+    });
+    const wallet = {
+        account: {address: OWNER, type: "json-rpc"},
+        chain: null,
+        async sendTransaction(args: {to: `0x${string}`; data: Hex; value: bigint}): Promise<Hex> {
+            inFlight++;
+            maxConcurrent = Math.max(maxConcurrent, inFlight);
+            sent.push({to: args.to, data: args.data, value: args.value});
+            // Hold the first call open; subsequent calls return immediately. If serialization
+            // works, the second call won't start until we `releaseFirst()`.
+            if (sent.length === 1) await firstHeld;
+            inFlight--;
+            return (`0x${sent.length.toString(16).padStart(64, "0")}`) as Hex;
+        },
+    } as unknown as WalletClient;
+    const publicClient = {
+        async readContract(args: {functionName: string}): Promise<bigint> {
+            if (args.functionName === "allowance") return DEFAULT_FUNDER_ALLOWANCE;
+            throw new Error(`unexpected readContract: ${args.functionName}`);
+        },
+        async waitForTransactionReceipt(args: {hash: Hex}): Promise<{
+            status: "success";
+            blockNumber: bigint;
+            gasUsed: bigint;
+            transactionHash: Hex;
+        }> {
+            return {status: "success", blockNumber: 1n, gasUsed: 0n, transactionHash: args.hash};
+        },
+    } as unknown as PublicClient;
+    const funder = new Funder({
+        walletClient: wallet,
+        publicClient,
+        treasury: TREASURY,
+        parkToken: PARK_TOKEN,
+        disperse: DISPERSE,
+        maxSize: 1, // every accept triggers an immediate flush
+    });
+    await funder.start();
+    // Push three entries — three flushes get scheduled before the first finishes.
+    funder.accept({address: G1, amount: 1n});
+    funder.accept({address: G2, amount: 2n});
+    funder.accept({address: G3, amount: 3n});
+    // Yield a few microtasks so all three flushes have had a chance to start. With the bug,
+    // all three would be in flight simultaneously; with the fix, only the first is in flight.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(maxConcurrent, 1, "only one sendTransaction should be in flight at a time");
+    assert.equal(sent.length, 1, "only the first flush should have entered sendTransaction yet");
+    // Release the held call. The remaining two should drain in order.
+    releaseFirst();
+    for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(sent.length, 3, "all three flushes should complete after the first releases");
+    assert.equal(maxConcurrent, 1, "still no overlap across the entire run");
+});
+
 test("stats shape: avgBatchFill = flushedEntries / flushedBatches", async () => {
     const {funder} = makeFunder({maxSize: 2});
     await funder.start();

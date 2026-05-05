@@ -90,6 +90,9 @@ export class PermitCollector {
     #acceptedAt: number[] = [];
     #ageTimer: ReturnType<typeof setTimeout> | undefined;
     readonly #pending = new Set<Promise<void>>();
+    /// Per-operator submission chain — see Funder for rationale. Serializes admin-tx sends
+    /// from this subsystem so viem's auto-nonce doesn't race when two windows close at once.
+    #submitChain: Promise<unknown> = Promise.resolve();
 
     #stopped = false;
     #accepted = 0;
@@ -265,13 +268,22 @@ export class PermitCollector {
         // M3.13 + M3.16 — `submitAndConfirm` wraps sendTransaction + receipt-status + retry on
         // Monad mempool-lag insufficient-balance errors. Without the retry, the permit
         // collector's first window-flush from a freshly-funded operator EOA reliably fails.
-        return submitAndConfirm({
-            walletClient: this.#walletClient,
-            publicClient: this.#publicClient,
-            request: {to: this.#treasury, data, value: 0n},
-            opName: "permits.treasury.executeBatch",
-            log: this.#log,
-        });
+        const prev = this.#submitChain;
+        const result = (async () => {
+            await prev.catch(() => undefined);
+            return submitAndConfirm({
+                walletClient: this.#walletClient,
+                publicClient: this.#publicClient,
+                request: {to: this.#treasury, data, value: 0n},
+                opName: "permits.treasury.executeBatch",
+                log: this.#log,
+            });
+        })();
+        this.#submitChain = result.then(
+            () => undefined,
+            () => undefined,
+        );
+        return result;
     }
 }
 
