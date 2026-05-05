@@ -100,6 +100,12 @@ export interface SidecarConfig {
     /// or starting a new park doesn't collide with prior runs in `VenueRegistry`. See
     /// `venues/epoch.ts`.
     sessionEpoch?: number;
+    /// At boot, if the treasury's PARK balance is zero, auto-fire `parkLaunchSetup` (drip PARK
+    /// into treasury, drip MON to relayers). Default `true`. Disable with `--auto-launch off`
+    /// if you'd rather drive park-launch manually via the `chain.faucet.drip` IPC method.
+    /// Only fires when the faucet owner key is configured (without it the sidecar can't sign
+    /// the drip txs anyway).
+    autoLaunch: boolean;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -135,6 +141,7 @@ Options:
   --rpc-batching <on|off>          JSON-RPC batching (default: on; coalesces same-tick concurrent calls)
   --rpc-timeout-ms <n>             HTTP request timeout for every viem call (default: 30000)
   --session-epoch <n>              Override the per-boot venue-id epoch (uint16). Random by default.
+  --auto-launch <on|off>           Auto-fire parkLaunchSetup at boot if treasury PARK is zero (default: on)
   -h, --help                       Show this help
 
 Environment:
@@ -174,6 +181,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let rpcBatching = true;
     let rpcTimeoutMs = 30_000;
     let sessionEpoch: number | undefined;
+    let autoLaunch = true;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -396,6 +404,17 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 sessionEpoch = n;
                 break;
             }
+            case "--auto-launch": {
+                const raw = argv[++i];
+                if (raw === "on" || raw === "true" || raw === "1") {
+                    autoLaunch = true;
+                } else if (raw === "off" || raw === "false" || raw === "0") {
+                    autoLaunch = false;
+                } else {
+                    throw new Error(`--auto-launch must be on/off, got ${String(raw)}`);
+                }
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -447,6 +466,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
         outboxMaxBytes,
         rpcBatching,
         rpcTimeoutMs,
+        autoLaunch,
     };
     if (resolvedOutbox) config.outboxPath = resolvedOutbox;
     if (resolvedOutboxCursor) config.outboxCursorPath = resolvedOutboxCursor;

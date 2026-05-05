@@ -394,6 +394,46 @@ async function main(): Promise<void> {
             );
         }
     }
+
+    // Auto-launch: if the treasury has zero PARK at boot, fire parkLaunchSetup so the funder's
+    // first window-flush has tokens to disperse. Without this, fresh deployments (or
+    // post-redeploy state) silently revert with `CallFailed → ERC20InsufficientBalance`. Disable
+    // with `--auto-launch off` if you'd rather drive the drip manually via `chain.faucet.drip`.
+    if (config.autoLaunch && faucet && balances) {
+        try {
+            const treasury = config.deployments.demoPark.treasury;
+            const current = await balances.parkBalance(treasury);
+            if (current === 0n) {
+                log.info(
+                    {treasury, parkLaunchWei: config.parkLaunchWei.toString()},
+                    "auto-launch: treasury PARK balance is zero — firing parkLaunchSetup",
+                );
+                const result = await parkLaunchSetup(faucet, {
+                    treasury,
+                    relayers: relayers.map((r) => r.address),
+                    parkAmount: config.parkLaunchWei,
+                    monPerRelayer: config.monTargetWei,
+                });
+                log.info(
+                    {parkTx: result.parkTx, monTx: result.monTx},
+                    "auto-launch: parkLaunchSetup confirmed; treasury funded",
+                );
+            } else {
+                log.info(
+                    {treasury, currentWei: current.toString()},
+                    "auto-launch: treasury already funded — skipping",
+                );
+            }
+        } catch (err) {
+            log.error(
+                {err},
+                "auto-launch: parkLaunchSetup failed — funder will revert until you call chain.faucet.drip",
+            );
+        }
+    } else if (!config.autoLaunch) {
+        log.info("auto-launch disabled (--auto-launch off); call chain.faucet.drip to fund the treasury");
+    }
+
     // M3.16 — note: `warmUpEOA` is still exported for tests + situational use (e.g. an
     // operator who returns from a long idle period might want to warm up before a flurry).
     // We *don't* call it at boot anymore: the proper fix is `submitAndConfirm`'s internal
