@@ -38,6 +38,29 @@ export const PARK_TREASURY_ABI = parseAbi([
     "function addOperator(address op)",
     "function removeOperator(address op)",
     "function operators(address op) view returns (bool)",
+    // `execute` wraps inner-call reverts as `CallFailed(bytes)`. The decoder unwraps this
+    // recursively against `KNOWN_REVERT_ERRORS_ABI` so the inner ERC20InsufficientBalance /
+    // ERC20InsufficientAllowance / etc. surfaces in the log.
+    "error CallFailed(bytes result)",
+    "error NotOwnerOrOperator(address caller)",
+    "error ZeroOperator()",
+]);
+
+/// OpenZeppelin v5 ERC20 + Ownable + Permit custom errors. Most reverts the funder /
+/// permits / sweeper / faucet paths see come from one of these, wrapped inside
+/// `CallFailed(bytes)` from the treasury hop. Pulled into their own bundle so the decoder
+/// can unwrap a `CallFailed` payload recursively without re-walking unrelated error decls.
+export const ERC20_ERRORS_ABI = parseAbi([
+    "error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)",
+    "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
+    "error ERC20InvalidApprover(address approver)",
+    "error ERC20InvalidSpender(address spender)",
+    "error ERC20InvalidReceiver(address receiver)",
+    "error ERC20InvalidSender(address sender)",
+    "error ERC2612ExpiredSignature(uint256 deadline)",
+    "error ERC2612InvalidSigner(address signer, address owner)",
+    "error OwnableUnauthorizedAccount(address account)",
+    "error OwnableInvalidOwner(address owner)",
 ]);
 
 export const FAUCET_ABI = parseAbi([
@@ -53,6 +76,20 @@ export const SETTLEMENT_BATCHER_ABI = parseAbi([
     "struct SpendAuth { address from; uint32 venueId; uint8 category; uint256 amount; uint64 nonce; uint64 deadline; uint64 gameTick; }",
     "function settle(SpendAuth[] auths, bytes[] sigs)",
     "function sigNonces(address guest) view returns (uint64)",
+    "error LengthMismatch()",
+    "error EmptyBatch()",
+    "error DeadlineExpired(uint256 index)",
+    "error BadNonce(uint256 index, uint64 expected, uint64 got)",
+    "error BadSignature(uint256 index)",
+    "error VenueNotRegistered(uint256 index, uint32 venueId)",
+    "error VenueInactive(uint256 index, uint32 venueId)",
+]);
+
+/// Faucet custom errors. Surfaces in dripPark / dripMon paths.
+export const FAUCET_ERRORS_ABI = parseAbi([
+    "error LengthMismatch()",
+    "error InsufficientMonBalance()",
+    "error TransferFailed()",
 ]);
 
 /// `VenueRegistry` — owner-only catalog mirrored by M3.8. Selectors pinned to the deployed

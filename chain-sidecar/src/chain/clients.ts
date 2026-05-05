@@ -1,6 +1,7 @@
-import {createPublicClient, createWalletClient, http, type Chain, type Hex, type PublicClient, type WalletClient} from "viem";
+import {createPublicClient, createWalletClient, http, type Abi, type Chain, type Hex, type PublicClient, type WalletClient} from "viem";
 import {privateKeyToAccount} from "viem/accounts";
 import {log as defaultLog, type Logger} from "../log.js";
+import {decodeRevertReason} from "./decode-revert.js";
 
 /// Build a viem `Chain` config for whatever testnet / mainnet the sidecar is pointed at.
 /// We don't import a pre-baked `monadTestnet` from `viem/chains` because the sidecar should
@@ -131,6 +132,10 @@ export interface ConfirmTxOptions {
     /// Max wait time for inclusion. Default 30 s — well above Monad block time but short
     /// enough that a stuck tx fails fast rather than hanging the caller forever.
     timeoutMs?: number;
+    /// Optional override for revert decoding. Defaults to the union ABI in
+    /// `decode-revert.ts#KNOWN_REVERT_ERRORS_ABI` (covers every custom error declared in
+    /// `abis.ts`, including `Treasury.CallFailed(bytes)` recursive-unwrap).
+    errorAbi?: Abi;
 }
 
 export async function confirmTx(opts: ConfirmTxOptions): Promise<{
@@ -143,8 +148,17 @@ export async function confirmTx(opts: ConfirmTxOptions): Promise<{
         timeout: timeoutMs,
     });
     if (receipt.status !== "success") {
+        // Best-effort decode of the revert reason so logs surface "ERC20InsufficientBalance"
+        // or "CallFailed → ERC20InsufficientAllowance(...)" instead of just a tx hash.
+        const errorAbiOpt = opts.errorAbi !== undefined ? {errorAbi: opts.errorAbi} : {};
+        const reason = await decodeRevertReason({
+            publicClient: opts.publicClient,
+            txHash: opts.txHash,
+            ...errorAbiOpt,
+        }).catch(() => undefined);
+        const reasonSuffix = reason ? ` reason=${reason}` : "";
         throw new Error(
-            `${opts.opName} reverted on chain: tx=${opts.txHash} block=${receipt.blockNumber.toString()}`,
+            `${opts.opName} reverted on chain: tx=${opts.txHash} block=${receipt.blockNumber.toString()}${reasonSuffix}`,
         );
     }
     return {blockNumber: receipt.blockNumber, gasUsed: receipt.gasUsed};
