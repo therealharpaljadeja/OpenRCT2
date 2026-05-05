@@ -32,6 +32,7 @@ import {Funder} from "./funder/index.js";
 import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import {Sweeper} from "./sweeper/index.js";
 import {VenueMirror} from "./venues/index.js";
+import {applyEpoch, formatEpoch, generateEpoch, MAX_GAME_ID} from "./venues/epoch.js";
 import {MetricsAggregator} from "./metrics/index.js";
 import {SpendRateLimiter} from "./ratelimit/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
@@ -69,6 +70,15 @@ async function main(): Promise<void> {
             "created fresh keystore — back up the file (encryption only protects against passphrase-less access)",
         );
     }
+
+    // Per-session venue id namespace. Translates `gameId → (epoch << 16) | gameId` at the
+    // outbox-consumption boundary so the on-chain `VenueRegistry` never sees a colliding id
+    // across sessions. See `venues/epoch.ts`.
+    const sessionEpoch = config.sessionEpoch ?? generateEpoch();
+    log.info(
+        {epoch: sessionEpoch, epochHex: formatEpoch(sessionEpoch), overridden: config.sessionEpoch !== undefined},
+        "session venue-id epoch resolved",
+    );
 
     const relayers = relayerPool(unlocked.mnemonic, config.relayerCount);
     log.info(
@@ -520,33 +530,58 @@ async function main(): Promise<void> {
                     sweeper.accept({hdIndex: event.hdIndex, address});
                     break;
                 }
-                case "VENUE_REGISTERED":
+                case "VENUE_REGISTERED": {
+                    // Translate game ride index → on-chain venue id. See `venues/epoch.ts`.
+                    let chainVenueId: number;
+                    try {
+                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                    } catch (err) {
+                        log.warn({err, event, max: MAX_GAME_ID}, "VENUE_REGISTERED: gameId out of range — dropping");
+                        break;
+                    }
                     if (venueMirror) {
                         venueMirror.accept({
                             kind: "register",
-                            venueId: event.venueId,
+                            venueId: chainVenueId,
                             venueKind: event.venueKind,
                             name: event.name,
                             objectType: event.objectType,
                         });
                     } else {
-                        log.debug({event}, "VENUE_REGISTERED (mirror not configured)");
+                        log.debug({event, chainVenueId}, "VENUE_REGISTERED (mirror not configured)");
                     }
                     break;
-                case "VENUE_RENAMED":
+                }
+                case "VENUE_RENAMED": {
+                    let chainVenueId: number;
+                    try {
+                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                    } catch (err) {
+                        log.warn({err, event}, "VENUE_RENAMED: gameId out of range — dropping");
+                        break;
+                    }
                     if (venueMirror) {
-                        venueMirror.accept({kind: "rename", venueId: event.venueId, newName: event.newName});
+                        venueMirror.accept({kind: "rename", venueId: chainVenueId, newName: event.newName});
                     } else {
-                        log.debug({event}, "VENUE_RENAMED (mirror not configured)");
+                        log.debug({event, chainVenueId}, "VENUE_RENAMED (mirror not configured)");
                     }
                     break;
-                case "VENUE_REMOVED":
+                }
+                case "VENUE_REMOVED": {
+                    let chainVenueId: number;
+                    try {
+                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                    } catch (err) {
+                        log.warn({err, event}, "VENUE_REMOVED: gameId out of range — dropping");
+                        break;
+                    }
                     if (venueMirror) {
-                        venueMirror.accept({kind: "remove", venueId: event.venueId});
+                        venueMirror.accept({kind: "remove", venueId: chainVenueId});
                     } else {
-                        log.debug({event}, "VENUE_REMOVED (mirror not configured)");
+                        log.debug({event, chainVenueId}, "VENUE_REMOVED (mirror not configured)");
                     }
                     break;
+                }
                 case "GUEST_SPEND": {
                     // M3.11 — full sign-and-push hot path. The dispatcher owns rate-limit
                     // consultation, venue lookup, address resolution, sig-nonce tracking,
@@ -561,7 +596,14 @@ async function main(): Promise<void> {
                         }
                         break;
                     }
-                    await spendDispatcher.handle(event);
+                    let chainVenueId: number;
+                    try {
+                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                    } catch (err) {
+                        log.warn({err, event}, "GUEST_SPEND: gameId out of range — dropping");
+                        break;
+                    }
+                    await spendDispatcher.handle({...event, venueId: chainVenueId});
                     break;
                 }
             }
@@ -581,6 +623,7 @@ async function main(): Promise<void> {
             permits: permits ? "configured" : null,
             sweeper: sweeper ? "configured" : null,
             venueMirror: venueMirror ? "configured" : null,
+            sessionEpoch: formatEpoch(sessionEpoch),
         },
         "sidecar ready",
     );

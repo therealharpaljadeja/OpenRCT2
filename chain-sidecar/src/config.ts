@@ -95,6 +95,11 @@ export interface SidecarConfig {
     /// Default 30000 (30 s). Bump for slow / contended RPCs; drop for snappier failure
     /// detection in local-dev. Applies uniformly to public + wallet clients.
     rpcTimeoutMs: number;
+    /// Optional override for the per-session venue-id epoch (uint16). When omitted, the sidecar
+    /// generates a random one at startup. Used to namespace `(gameId → chainId)` so re-loading
+    /// or starting a new park doesn't collide with prior runs in `VenueRegistry`. See
+    /// `venues/epoch.ts`.
+    sessionEpoch?: number;
 }
 
 const USAGE = `Usage: rct2-chain-sidecar [options]
@@ -129,6 +134,7 @@ Options:
   --outbox-max-bytes <n>           WAL byte cap before the writer truncates (default: ${DEFAULT_MAX_BYTES})
   --rpc-batching <on|off>          JSON-RPC batching (default: on; coalesces same-tick concurrent calls)
   --rpc-timeout-ms <n>             HTTP request timeout for every viem call (default: 30000)
+  --session-epoch <n>              Override the per-boot venue-id epoch (uint16). Random by default.
   -h, --help                       Show this help
 
 Environment:
@@ -167,6 +173,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     let outboxMaxBytes = DEFAULT_MAX_BYTES;
     let rpcBatching = true;
     let rpcTimeoutMs = 30_000;
+    let sessionEpoch: number | undefined;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         switch (a) {
@@ -380,6 +387,15 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
                 rpcTimeoutMs = n;
                 break;
             }
+            case "--session-epoch": {
+                const raw = argv[++i];
+                const n = Number(raw);
+                if (!Number.isInteger(n) || n < 0 || n > 0xffff) {
+                    throw new Error(`--session-epoch must be an integer in [0, 65535], got ${String(raw)}`);
+                }
+                sessionEpoch = n;
+                break;
+            }
             default:
                 throw new Error(`unknown argument: ${a}\n\n${USAGE}`);
         }
@@ -437,6 +453,7 @@ export function parseArgs(argv: readonly string[]): SidecarConfig {
     if (outboxPollIntervalMs !== undefined) config.outboxPollIntervalMs = outboxPollIntervalMs;
     if (rpcUrl) config.rpcUrl = rpcUrl;
     if (faucetOwnerKey) config.faucetOwnerKey = faucetOwnerKey;
+    if (sessionEpoch !== undefined) config.sessionEpoch = sessionEpoch;
     return config;
 }
 

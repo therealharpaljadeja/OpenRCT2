@@ -68,4 +68,10 @@ export const VENUE_REGISTRY_ABI = parseAbi([
     "function venueIdAt(uint256 idx) view returns (uint32)",
     "function subAccountOf(uint32 id) view returns (address)",
     "function exists(uint32 id) view returns (bool)",
+    // Idempotent-revert errors. Declared here so viem's revert decoder reports them by name
+    // (instead of the raw 4-byte selector), letting `isAlreadyAppliedError` classify the three
+    // recoverable mirror cases as `skippedAlreadyApplied` rather than `rpcErrors`.
+    "error AlreadyRegistered()",
+    "error NotRegistered()",
+    "error AlreadyInactive()",
 ]);
