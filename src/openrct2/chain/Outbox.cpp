@@ -23,6 +23,7 @@
     #include <string>
     #include <system_error>
     #include <thread>
+    #include <unordered_set>
     #include <utility>
 
 namespace OpenRCT2::Chain
@@ -345,6 +346,12 @@ namespace OpenRCT2::Chain
         std::atomic<uint64_t> bytesWritten{ 0 };
         std::atomic<uint64_t> rotations{ 0 };
         std::atomic<uint64_t> writeErrors{ 0 };
+
+        // Producer-thread-only: venueIds with a live VENUE_REGISTERED that hasn't been paired
+        // with a VENUE_REMOVED yet. Used to make Push{VenueRegistered,VenueRemoved} idempotent
+        // so a placement that the agent attempts and rolls back doesn't produce a stray
+        // register/remove pair on chain.
+        std::unordered_set<uint32_t> announcedVenues;
 
         explicit Impl(OutboxOptions o)
             : opts(std::move(o))
@@ -717,6 +724,8 @@ namespace OpenRCT2::Chain
 
     void Outbox::PushVenueRegistered(uint32_t venueId, VenueKind kind, std::string_view name, std::string_view objectType)
     {
+        if (!_impl->announcedVenues.insert(venueId).second)
+            return;
         Record r{};
         r.kind = Record::Kind::VenueRegistered;
         r.venueId = venueId;
@@ -734,6 +743,8 @@ namespace OpenRCT2::Chain
 
     void Outbox::PushVenueRemoved(uint32_t venueId)
     {
+        if (_impl->announcedVenues.erase(venueId) == 0)
+            return;
         Record r{};
         r.kind = Record::Kind::VenueRemoved;
         r.venueId = venueId;

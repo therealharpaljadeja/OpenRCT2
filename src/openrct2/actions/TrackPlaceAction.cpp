@@ -11,6 +11,13 @@
 
 #include "../Diagnostic.h"
 #include "../GameState.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../Context.h"
+    #include "../OpenRCT2.h"
+    #include "../chain/Outbox.h"
+    #include "../object/ObjectManager.h"
+    #include "../object/RideObject.h"
+#endif
 #include "../core/Money.hpp"
 #include "../core/Numerics.hpp"
 #include "../management/Finance.h"
@@ -728,6 +735,47 @@ namespace OpenRCT2::GameActions
         price >>= 16;
         res.Cost = costs + supportCosts + price;
         res.SetData(std::move(resultData));
+
+#ifdef OPENRCT2_CHAIN
+        // Announce the venue on chain only when a real (non-ghost) piece commits. The Outbox
+        // dedupes by venueId, so calling on every piece of a multi-piece ride is fine — only
+        // the first commit emits VENUE_REGISTERED. Failed/ghost placements never reach here.
+        if (gOpenRCT2ChainEnabled && !(GetFlags() & GAME_COMMAND_FLAG_GHOST))
+        {
+            if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+            {
+                OpenRCT2::Chain::VenueKind kind = OpenRCT2::Chain::VenueKind::Ride;
+                switch (rtd.ColourKey)
+                {
+                    case RideColourKey::Food:
+                    case RideColourKey::Drink:
+                        kind = OpenRCT2::Chain::VenueKind::Stall;
+                        break;
+                    case RideColourKey::Shop:
+                        kind = OpenRCT2::Chain::VenueKind::Shop;
+                        break;
+                    case RideColourKey::InfoKiosk:
+                    case RideColourKey::FirstAid:
+                    case RideColourKey::Toilets:
+                        kind = OpenRCT2::Chain::VenueKind::Facility;
+                        break;
+                    case RideColourKey::CashMachine:
+                        kind = OpenRCT2::Chain::VenueKind::ATM;
+                        break;
+                    case RideColourKey::Ride:
+                    default:
+                        kind = OpenRCT2::Chain::VenueKind::Ride;
+                        break;
+                }
+                std::string_view objectId;
+                auto* rideObj = OpenRCT2::GetContext()->GetObjectManager().GetLoadedObject<RideObject>(ride->subtype);
+                if (rideObj != nullptr)
+                    objectId = rideObj->GetIdentifier();
+                outbox->PushVenueRegistered(
+                    static_cast<uint32_t>(_rideIndex.ToUnderlying()) + 1u, kind, ride->getName(), objectId);
+            }
+        }
+#endif
 
         return res;
     }
