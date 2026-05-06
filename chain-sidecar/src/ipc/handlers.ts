@@ -350,6 +350,110 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("chain.faucetReserve.status", () =>
         runtime.faucetReserve ? {enabled: true, ...runtime.faucetReserve.stats()} : {enabled: false},
     );
+    // Park earnings — one-shot summary the in-game agent uses to brief the human.
+    // Aggregates per-venue PARK balances (each venue's CREATE2 sub-account is its lifetime
+    // revenue ledger), the treasury operating budget, and the deployer's MON backstop.
+    // Activity counters and pipeline-health are surfaced inline so the agent can decide
+    // whether to flag any operational issues alongside the revenue numbers.
+    //
+    // PARK locked in venue sub-accounts is by design (contract has no withdraw path) — the
+    // total here reads as "what the park has earned, ever, since this session's epoch."
+    server.register("chain.parkEarnings", async (params) => {
+        if (!runtime.balances || !runtime.venueMirror) return {enabled: false};
+        // Optional `all: boolean` flag — when omitted, the byVenue list is sliced to the
+        // top 5 by balance so the agent's terse rendering doesn't drown in noise. The
+        // totals and per-kind breakdown always reflect the full venue set.
+        const showAll = params && typeof params === "object" && (params as {all?: boolean}).all === true;
+        const venues = runtime.venueMirror.list();
+        const treasury = runtime.config.deployments.demoPark.treasury;
+
+        // One round-trip per balance — viem batches into a single HTTP call thanks to the
+        // shared transport. Even for 100 venues this is well under one block of latency.
+        const subAccountBalances = await Promise.all(
+            venues.map((v) => runtime.balances!.parkBalance(v.subAccount)),
+        );
+        const treasuryBalance = await runtime.balances.parkBalance(treasury);
+
+        // VenueKind enum: 0 ParkEntrance / 1 Ride / 2 Shop / 3 Stall / 4 Facility / 5 ATM.
+        // Match the Solidity ordering exactly so callers can index by kind without lookup.
+        const kindLabels = ["parkEntrance", "ride", "shop", "stall", "facility", "atm"] as const;
+        const byKindWei: Record<string, bigint> = Object.fromEntries(kindLabels.map((k) => [k, 0n]));
+        const byKindCount: Record<string, number> = Object.fromEntries(kindLabels.map((k) => [k, 0]));
+        let totalRevenue = 0n;
+        const byVenue = venues.map((v, i) => {
+            const bal = subAccountBalances[i]!;
+            totalRevenue += bal;
+            const label = kindLabels[v.kind] ?? "unknown";
+            byKindWei[label] = (byKindWei[label] ?? 0n) + bal;
+            byKindCount[label] = (byKindCount[label] ?? 0) + 1;
+            return {
+                id: v.id,
+                name: v.name,
+                kind: v.kind,
+                kindLabel: label,
+                subAccount: v.subAccount,
+                balanceWei: bal.toString(),
+                active: v.active,
+            };
+        });
+        // Sort descending by revenue so the top-N renderer just slices the head.
+        byVenue.sort((a, b) => {
+            const ax = BigInt(a.balanceWei);
+            const bx = BigInt(b.balanceWei);
+            return bx > ax ? 1 : bx < ax ? -1 : 0;
+        });
+
+        // Activity from the spend dispatcher's counters. `signed` is the count that
+        // reached the batcher (and on-chain absent revert); the dropped* family is
+        // pre-batcher rejections broken out by reason.
+        const dispatch = runtime.spendDispatcher?.stats();
+        const dropped = dispatch
+            ? dispatch.droppedRateLimited
+                + dispatch.droppedUnknownVenue
+                + dispatch.droppedInactiveVenue
+                + dispatch.droppedAddressDerivation
+                + dispatch.droppedMalformed
+            : 0;
+
+        // Pipeline health pulled from the faucet-reserve loop's stats. The headline signal
+        // is `deployerCritical` — once that flips the whole settle path stalls in minutes.
+        const reserve = runtime.faucetReserve?.stats();
+        const alerts: string[] = [];
+        if (reserve?.deployerCritical) alerts.push("deployer EOA below critical floor — fund from testnet faucet");
+
+        return {
+            enabled: true,
+            totalRevenueWei: totalRevenue.toString(),
+            treasuryWei: treasuryBalance.toString(),
+            deployerWei: reserve?.lastDeployerBalance ?? "0",
+            faucetWei: reserve?.lastFaucetBalance ?? "0",
+            venueCount: venues.length,
+            byKindWei: Object.fromEntries(Object.entries(byKindWei).map(([k, v]) => [k, v.toString()])),
+            byKindCount,
+            // Slice top-5 by default. The full list ships when `params.all === true` so a
+            // big park doesn't bury the renderer in dozens of low-balance rows.
+            byVenue: showAll ? byVenue : byVenue.slice(0, 5),
+            byVenueTotal: byVenue.length,
+            activity: dispatch
+                ? {
+                      accepted: dispatch.accepted,
+                      signed: dispatch.signed,
+                      dropped,
+                      droppedReasons: {
+                          rateLimited: dispatch.droppedRateLimited,
+                          unknownVenue: dispatch.droppedUnknownVenue,
+                          inactiveVenue: dispatch.droppedInactiveVenue,
+                          addressDerivation: dispatch.droppedAddressDerivation,
+                          malformed: dispatch.droppedMalformed,
+                      },
+                  }
+                : null,
+            pipeline: {
+                healthy: alerts.length === 0,
+                alerts,
+            },
+        };
+    });
     server.register("chain.spend.status", () => {
         if (!runtime.spendDispatcher) return {enabled: false};
         const dispatch = runtime.spendDispatcher.stats();

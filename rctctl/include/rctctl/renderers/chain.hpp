@@ -5,5 +5,6 @@
 namespace rctctl::renderers {
 
 void RenderChainStatus(const nlohmann::json& result);
+void RenderParkEarnings(const nlohmann::json& result);
 
 } // namespace rctctl::renderers
