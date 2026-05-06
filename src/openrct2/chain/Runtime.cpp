@@ -137,6 +137,15 @@ namespace OpenRCT2::Chain
             }
             SetOutbox(std::move(outbox));
             gOutboxStarted = true;
+
+            // Bootstrap the park-entrance venue. Guests pay at the entrance with
+            // `venueId == kVenueIdEntrance` (Peep.cpp), so the on-chain VenueRegistry needs
+            // a matching entry or every entrance fee drops at the dispatcher with
+            // `VenueNotRegistered`. Outbox dedupes, so re-runs are safe.
+            if (auto* startedOutbox = GetOutbox())
+            {
+                startedOutbox->PushVenueRegistered(kVenueIdEntrance, VenueKind::ParkEntrance, "Park Entrance", "");
+            }
         }
 
         // ---- Resolve node before fork — `execve` does no PATH search.
