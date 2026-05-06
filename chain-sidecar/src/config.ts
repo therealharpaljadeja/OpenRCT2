@@ -10,8 +10,13 @@ export {loadDeployments, type Deployments};
 /// Defaults for the M2.5 chain plumbing. Per-relayer MON sizes are conservative — Monad
 /// testnet gas should be cheap, but we want headroom across many batch txs without leaning
 /// on the top-up loop on the hot path.
-const DEFAULT_MON_LOW_WATER_WEI = 10_000_000_000_000_000n; // 0.01 MON
-const DEFAULT_MON_TARGET_WEI = 100_000_000_000_000_000n; // 0.1 MON
+// A Monad-testnet settle tx costs ~0.026 MON at the gas params we use. lowWater needs to
+// be at least one tx's worth of gas with margin — otherwise relayers land in the dead zone
+// where balance is above lowWater (no topup fires) but below the cost of one tx (RPC rejects
+// every submit). 0.1 MON gives ~3 txs of headroom above lowWater; target=1 MON keeps refill
+// churn low (~30+ settle txs between refills per relayer).
+const DEFAULT_MON_LOW_WATER_WEI = 100_000_000_000_000_000n; // 0.1 MON
+const DEFAULT_MON_TARGET_WEI = 1_000_000_000_000_000_000n; // 1 MON
 const DEFAULT_PARK_LAUNCH_WEI = 1_000_000n * 10n ** 18n; // 1,000,000 PARK
 const DEFAULT_TOPUP_INTERVAL_MS = 30_000;
 /// Funder window defaults — match plan §4.4 ("every 200 ms ... up to 200 new addresses").

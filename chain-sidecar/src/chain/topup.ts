@@ -67,6 +67,12 @@ export class RelayerTopUp {
     /// another tick right away instead of sleeping. Replaces the polling latency with
     /// near-zero on-demand response when the relayer pool signals a low-balance event.
     #immediateRequested = false;
+    /// Indices of relayers/operators flagged for a forced refill regardless of the
+    /// lowWater check. Populated by `markForcedRefill(idx)` when the pool signals a real
+    /// RPC-side insufficient-balance — that's the authoritative "this relayer can't even
+    /// afford one tx", which the bare `bal < lowWater` comparison can miss when the
+    /// configured lowWater is below one tx's gas. Cleared after each tick consumes them.
+    #forcedRefills = new Set<number>();
     /// M3.12 — resolves the next loop iteration's wait early when set. The wait loop
     /// `await`s this; `requestImmediate()` resolves it.
     #wakeResolve: (() => void) | undefined;
@@ -146,6 +152,18 @@ export class RelayerTopUp {
         }
     }
 
+    /// Force-refill a specific relayer/operator on the next tick, regardless of whether
+    /// its current balance is above lowWater. Called by the relayer pool when an RPC
+    /// rejects a submit with `Signer had insufficient balance` — that's authoritative
+    /// proof the relayer can't afford even one tx, which can hide above lowWater if the
+    /// configured threshold is below one tx's gas. Also wakes the loop immediately so
+    /// the refill fires within seconds rather than the full poll interval.
+    markForcedRefill(idx: number): void {
+        if (idx < 0 || idx >= this.#relayers.length) return;
+        this.#forcedRefills.add(idx);
+        this.requestImmediate();
+    }
+
     stats(): RelayerTopUpStats {
         return {
             ...this.#stats,
@@ -186,13 +204,19 @@ export class RelayerTopUp {
         const balances = await this.#balances.nativeBalances(this.#relayers);
         this.#stats.lastCheckedAt = Date.now();
         this.#stats.lastBalances = {};
+        // Snapshot + clear so a refill that races with another `markForcedRefill` doesn't
+        // get skipped: anything that arrives mid-tick goes into the *next* tick's set.
+        const forced = new Set(this.#forcedRefills);
+        this.#forcedRefills.clear();
         const under: {idx: number; addr: `0x${string}`; need: bigint}[] = [];
         const healthy: {idx: number; addr: `0x${string}`}[] = [];
         for (let i = 0; i < this.#relayers.length; i++) {
             const addr = this.#relayers[i]!;
             const bal = balances[i]!;
             this.#stats.lastBalances[addr] = bal.toString();
-            if (bal < this.#lowWater) {
+            // Force-refill bypasses the lowWater check — pool signal is authoritative.
+            // Still cap at target so we don't pour MON into an already-funded relayer.
+            if (bal < this.#lowWater || (forced.has(i) && bal < this.#target)) {
                 under.push({idx: i, addr, need: this.#target - bal});
             } else {
                 healthy.push({idx: i, addr});

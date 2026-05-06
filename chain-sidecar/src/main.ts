@@ -348,8 +348,11 @@ async function main(): Promise<void> {
         // marks it offline; we ask the topup loop to fire immediately so the relayer comes
         // back online with low extra latency rather than waiting for the next polling tick.
         onRelayerInsufficientBalance: (idx, address) => {
-            log.warn({idx, address}, "relayer low on MON — requesting immediate topup");
-            topup?.requestImmediate();
+            log.warn({idx, address}, "relayer low on MON — forcing refill");
+            // Force-refill, not just immediate-tick: a real RPC `insufficient balance`
+            // means the relayer can't afford one tx, which can sit above the configured
+            // lowWater. The forced flag bypasses that comparison for this idx.
+            topup?.markForcedRefill(idx);
         },
         // M3.12 — Fix 1: when a batch fails terminally, invalidate the local sigNonce cache
         // for every guest in the batch. The chain didn't move, but the dispatcher's local
