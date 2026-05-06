@@ -2,7 +2,7 @@ import type {SidecarConfig} from "../config.js";
 import type {DerivedAccount} from "../derive/index.js";
 import type {GuestAddressCache} from "../derive/cache.js";
 import type {OutboxReader} from "../outbox/index.js";
-import type {BalanceReader, FaucetWriter, RelayerTopUp} from "../chain/index.js";
+import type {BalanceReader, FaucetReserveTopUp, FaucetWriter, RelayerTopUp} from "../chain/index.js";
 import {parkLaunchSetup} from "../chain/index.js";
 import type {Batcher, SpendDispatcher, SpendNonceTracker} from "../batcher/index.js";
 import type {RelayerPool} from "../relayers/index.js";
@@ -39,6 +39,10 @@ export interface SidecarRuntime {
     balances?: BalanceReader;
     faucet?: FaucetWriter;
     topup?: RelayerTopUp;
+    /// Auto-topup loop that keeps the Faucet contract's MON balance funded out of the
+    /// deployer EOA. Surfaces deployer-low alarms via `chain.faucetReserve.status` so the
+    /// in-game terminal can show a banner before the pipeline stalls.
+    faucetReserve?: FaucetReserveTopUp;
     /// Batch accumulator (M3.2). Always present; runs idle until M3.5 wires the funder /
     /// outbox to feed it and M3.3 swaps the no-op sink for the relayer pool.
     batcher?: Batcher;
@@ -339,6 +343,13 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     // sig-nonce tracker stats so a stress run can see exactly where events went: dropped vs
     // signed vs sink-error. Returns `{enabled: false}` offline (matches the rest of the
     // chain-* surface).
+    // Auto-topup loop that keeps the Faucet contract funded out of the deployer EOA.
+    // The `deployerCritical` flag is the operational signal worth watching: when it flips
+    // true, the operator must fund the deployer manually from the Monad testnet faucet or
+    // the whole settle pipeline will eventually stall as the Faucet drains.
+    server.register("chain.faucetReserve.status", () =>
+        runtime.faucetReserve ? {enabled: true, ...runtime.faucetReserve.stats()} : {enabled: false},
+    );
     server.register("chain.spend.status", () => {
         if (!runtime.spendDispatcher) return {enabled: false};
         const dispatch = runtime.spendDispatcher.stats();

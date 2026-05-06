@@ -60,6 +60,7 @@ ipc() {
 
 # ---- the four diagnostic surfaces ------------------------------------------
 ipc chain.status
+ipc chain.faucetReserve.status
 ipc chain.spend.status
 ipc chain.permits.status
 ipc chain.venues.status

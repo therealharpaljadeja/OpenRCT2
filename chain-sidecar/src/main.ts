@@ -18,6 +18,8 @@ import {
     authorizeOperators,
     createBalanceReader,
     createFaucetWriter,
+    FAUCET_ABI,
+    FaucetReserveTopUp,
     makeFaucetOwnerClient,
     makeOperatorClient,
     makePublicClient,
@@ -117,6 +119,7 @@ async function main(): Promise<void> {
     let balances: BalanceReader | undefined;
     let faucet: FaucetWriter | undefined;
     let topup: RelayerTopUp | undefined;
+    let faucetReserve: FaucetReserveTopUp | undefined;
     let funder: Funder | undefined;
     let permits: PermitCollector | undefined;
     let sweeper: Sweeper | undefined;
@@ -158,6 +161,49 @@ async function main(): Promise<void> {
                 walletClient,
                 publicClient,
                 faucetAddress: config.deployments.globals.faucet,
+            });
+
+            // Boot-time owner check: the configured key must equal `Faucet.owner()`.
+            // A mismatch means every onlyOwner call (dripMon, treasury.execute, venue
+            // register/rename/remove) would revert with `OwnableUnauthorizedAccount`. The
+            // failure mode without this check is misleading: the RPC reports "Signer had
+            // insufficient balance" first because the operator wallet is also low, masking
+            // the real auth problem. Fail fast so the operator points the keystore at the
+            // right key before everything downstream tries to start.
+            const configuredOwner = walletClient.account!.address as `0x${string}`;
+            const onChainOwner = (await publicClient.readContract({
+                address: config.deployments.globals.faucet,
+                abi: FAUCET_ABI,
+                functionName: "owner",
+            })) as `0x${string}`;
+            if (configuredOwner.toLowerCase() !== onChainOwner.toLowerCase()) {
+                log.fatal(
+                    {configuredOwner, onChainOwner, faucet: config.deployments.globals.faucet},
+                    "FAUCET_OWNER_KEY does not match Faucet.owner() — every onlyOwner call would revert. "
+                        + "Fix: load the deployer's private key (the address that ran Deploy.s.sol), or "
+                        + "transfer ownership of Faucet/VenueRegistry/Treasury/ParkToken to the configured key.",
+                );
+                process.exit(2);
+            }
+
+            // Faucet-reserve auto-topup. Keeps the Faucet contract's MON above `lowWater`
+            // by transferring from the deployer EOA (which is `Faucet.owner()` and the only
+            // address authorized to drip out of it). Defaults sized for the demo park's
+            // expected throughput; override via env if you run a stress test.
+            //
+            // Critical floor: 0.5 MON kept on the deployer at all times so the deployer can
+            // still afford the eventual `withdrawMon` / governance txs even if the auto-loop
+            // gets confused. Below this, the loop alarms loudly and stops refilling.
+            const oneMon = 1_000_000_000_000_000_000n;
+            faucetReserve = new FaucetReserveTopUp({
+                faucet: config.deployments.globals.faucet,
+                deployerWalletClient: walletClient,
+                publicClient,
+                balances,
+                lowWater: oneMon * 2n,
+                target: oneMon * 10n,
+                deployerCriticalFloor: oneMon / 2n,
+                log,
             });
             // M3.14 — pre-build per-operator wallet clients so funder/permits/sweeper each
             // submit admin txs from their own EOA + nonce sequence (no contention with the
@@ -362,6 +408,7 @@ async function main(): Promise<void> {
     if (balances) runtime.balances = balances;
     if (faucet) runtime.faucet = faucet;
     if (topup) runtime.topup = topup;
+    if (faucetReserve) runtime.faucetReserve = faucetReserve;
     if (funder) runtime.funder = funder;
     if (permits) runtime.permits = permits;
     if (sweeper) runtime.sweeper = sweeper;
@@ -377,6 +424,21 @@ async function main(): Promise<void> {
     // The operator addresses are brand-new on first boot (zero MON); without a forced
     // topup tick, the approval tx would fail with `Signer had insufficient balance` and
     // the funder would refuse to accept entries until something else triggered a refill.
+    // Start the faucet-reserve loop *before* the relayer-topup loop so the Faucet contract
+    // is guaranteed to have MON before `topup.tickOnce()` tries to drip out of it. The
+    // pre-tick is awaited (with confirmTx) so the chain has actually credited the Faucet
+    // before the next call lands.
+    if (faucetReserve) {
+        faucetReserve.start();
+        try {
+            await faucetReserve.tickOnce();
+        } catch (err) {
+            log.warn(
+                {err},
+                "faucet-reserve pre-tick failed; downstream topup may stall if Faucet is empty",
+            );
+        }
+    }
     if (topup) {
         topup.start();
         try {
@@ -673,6 +735,8 @@ async function main(): Promise<void> {
         // Order: outbox (producer) → batcher (sink-driver) → relayer pool (terminal sink) →
         // server. Top-up loop is independent of all of them.
         if (topup) await topup.stop().catch((err) => log.error({err}, "topup stop failed"));
+        if (faucetReserve)
+            await faucetReserve.stop().catch((err) => log.error({err}, "faucet-reserve stop failed"));
         if (outboxReader) await outboxReader.stop().catch((err) => log.error({err}, "outbox stop failed"));
         if (funder) await funder.stop().catch((err) => log.error({err}, "funder stop failed"));
         if (permits) await permits.stop().catch((err) => log.error({err}, "permits stop failed"));

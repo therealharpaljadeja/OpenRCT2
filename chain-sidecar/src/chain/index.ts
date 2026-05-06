@@ -29,6 +29,11 @@ export {
 } from "./faucet.js";
 export {RelayerTopUp, type RelayerTopUpOptions, type RelayerTopUpStats} from "./topup.js";
 export {
+    FaucetReserveTopUp,
+    type FaucetReserveTopUpOptions,
+    type FaucetReserveTopUpStats,
+} from "./faucet-reserve.js";
+export {
     PARK_TOKEN_ABI,
     FAUCET_ABI,
     SETTLEMENT_BATCHER_ABI,
