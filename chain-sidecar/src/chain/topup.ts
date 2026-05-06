@@ -23,6 +23,13 @@ export interface RelayerTopUpOptions {
     /// "still healthy on chain" and we want the flag cleared. Errors from the callback are
     /// logged + swallowed so a misbehaving consumer can't take the topup loop down.
     onRelayerFunded?: (idx: number, address: `0x${string}`) => void;
+    /// Called when `dripMon` reverts with a Faucet-side balance error
+    /// (`InsufficientMonBalance` selector or its substring in the error message). The
+    /// natural consumer is `FaucetReserveTopUp.requestImmediate()`, which then refills
+    /// the Faucet contract from the deployer EOA. Without this, a Faucet-side empty
+    /// state stalls the relayer pool until the next slow polling tick of the reserve
+    /// loop happens to observe it.
+    onFaucetEmpty?: (err: unknown) => void;
     log?: Logger;
 }
 
@@ -62,6 +69,7 @@ export class RelayerTopUp {
     readonly #target: bigint;
     readonly #intervalMs: number;
     readonly #onRelayerFunded: ((idx: number, address: `0x${string}`) => void) | undefined;
+    readonly #onFaucetEmpty: ((err: unknown) => void) | undefined;
     readonly #log: Logger;
     /// M3.12 — set by `requestImmediate()`; the loop checks it after each tick and fires
     /// another tick right away instead of sleeping. Replaces the polling latency with
@@ -93,6 +101,7 @@ export class RelayerTopUp {
         this.#target = opts.target;
         this.#intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
         this.#onRelayerFunded = opts.onRelayerFunded;
+        this.#onFaucetEmpty = opts.onFaucetEmpty;
         this.#log = (opts.log ?? rootLog).child({topup: "relayer"});
         this.#stats = {
             running: false,
@@ -226,18 +235,42 @@ export class RelayerTopUp {
 
         let refilled = false;
         if (under.length > 0) {
-            const txHash = await this.#faucet.dripMon(
-                under.map((u) => u.addr),
-                under.map((u) => u.need),
-            );
-            this.#stats.refillTxCount++;
-            this.#stats.refillRelayerCount += under.length;
-            this.#stats.lastRefillTx = txHash;
-            refilled = true;
-            this.#log.info(
-                {refilled: under.length, tx: txHash, addrs: under.map((u) => u.addr)},
-                "relayer top-up issued",
-            );
+            try {
+                const txHash = await this.#faucet.dripMon(
+                    under.map((u) => u.addr),
+                    under.map((u) => u.need),
+                );
+                this.#stats.refillTxCount++;
+                this.#stats.refillRelayerCount += under.length;
+                this.#stats.lastRefillTx = txHash;
+                refilled = true;
+                this.#log.info(
+                    {refilled: under.length, tx: txHash, addrs: under.map((u) => u.addr)},
+                    "relayer top-up issued",
+                );
+            } catch (err) {
+                // Detect Faucet-side empty: the contract emits `InsufficientMonBalance()`,
+                // selector 0x199fe943. viem surfaces it through the revert message; substring
+                // match keeps us robust to viem's exact error formatting. When this fires,
+                // signal the FaucetReserveTopUp to refill *now* rather than waiting up to
+                // 30s for its next polling tick.
+                const msg = err instanceof Error ? err.message : String(err);
+                const isFaucetEmpty = msg.includes("0x199fe943") || msg.includes("InsufficientMonBalance");
+                if (isFaucetEmpty && this.#onFaucetEmpty) {
+                    this.#log.warn(
+                        {addrs: under.map((u) => u.addr)},
+                        "dripMon reverted with InsufficientMonBalance — signalling FaucetReserveTopUp",
+                    );
+                    try {
+                        this.#onFaucetEmpty(err);
+                    } catch (cbErr) {
+                        this.#log.error({cbErr}, "onFaucetEmpty callback threw");
+                    }
+                }
+                // Re-throw so the existing #loop error handler bumps `errors` and keeps the
+                // existing log surface intact.
+                throw err;
+            }
         }
 
         // M3.12 — fire the callback for *every* healthy relayer this tick: both the ones we

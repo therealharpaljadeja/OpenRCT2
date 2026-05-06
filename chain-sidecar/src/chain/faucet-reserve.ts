@@ -66,6 +66,12 @@ export class FaucetReserveTopUp {
     #stopWanted = false;
     #stats: FaucetReserveTopUpStats;
     #loopDone: Promise<void> | undefined;
+    /// Set by `requestImmediate()` to wake the loop's interval-sleep early.
+    #wakeResolve: (() => void) | undefined;
+    /// Bypass the lowWater check on the next tick — used when a downstream consumer
+    /// (RelayerTopUp's dripMon revert path) signals that the Faucet is empty *now*
+    /// regardless of the cached balance the loop saw last poll.
+    #forceRefill = false;
 
     constructor(opts: FaucetReserveTopUpOptions) {
         if (opts.target <= opts.lowWater) {
@@ -128,6 +134,19 @@ export class FaucetReserveTopUp {
         return this.#tick();
     }
 
+    /// Wake the loop now and force the next tick to refill regardless of the lowWater
+    /// check. Called by `RelayerTopUp` when `dripMon` reverts with `InsufficientMonBalance` —
+    /// that's authoritative proof the Faucet can't satisfy a drip, even if the last
+    /// observed balance was above lowWater (rapid drain mid-poll). Idempotent.
+    requestImmediate(): void {
+        this.#forceRefill = true;
+        if (this.#wakeResolve) {
+            const r = this.#wakeResolve;
+            this.#wakeResolve = undefined;
+            r();
+        }
+    }
+
     stats(): FaucetReserveTopUpStats {
         return {...this.#stats};
     }
@@ -141,13 +160,22 @@ export class FaucetReserveTopUp {
                 this.#log.error({err}, "faucet-reserve tick failed");
             }
             const deadline = Date.now() + this.#intervalMs;
-            while (!this.#stopWanted && Date.now() < deadline) {
-                await sleep(Math.min(200, deadline - Date.now()));
+            while (!this.#stopWanted && Date.now() < deadline && !this.#forceRefill) {
+                const remaining = deadline - Date.now();
+                const wake = new Promise<void>((resolve) => {
+                    this.#wakeResolve = resolve;
+                });
+                await Promise.race([wake, sleep(Math.min(200, remaining))]);
+                this.#wakeResolve = undefined;
             }
         }
     }
 
     async #tick(): Promise<boolean> {
+        // Snapshot + clear so a force-refill that arrives mid-tick goes into the *next*
+        // tick rather than getting swallowed.
+        const forced = this.#forceRefill;
+        this.#forceRefill = false;
         const deployer = this.#wallet.account!.address as `0x${string}`;
         const balances = await this.#balances.nativeBalances([this.#faucet, deployer]);
         const faucetBal = balances[0]!;
@@ -175,7 +203,9 @@ export class FaucetReserveTopUp {
         }
         this.#stats.deployerCritical = false;
 
-        if (faucetBal >= this.#lowWater) return false;
+        // forced bypass: refill regardless of lowWater (downstream signal that the
+        // Faucet is empty *now* even though our cached balance read above the threshold).
+        if (faucetBal >= this.#lowWater && !forced) return false;
 
         const need = this.#target - faucetBal;
         // Don't refill below the floor. If `need` is large and the deployer is mid-range

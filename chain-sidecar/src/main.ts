@@ -188,8 +188,13 @@ async function main(): Promise<void> {
 
             // Faucet-reserve auto-topup. Keeps the Faucet contract's MON above `lowWater`
             // by transferring from the deployer EOA (which is `Faucet.owner()` and the only
-            // address authorized to drip out of it). Defaults sized for the demo park's
-            // expected throughput; override via env if you run a stress test.
+            // address authorized to drip out of it).
+            //
+            // Sizing: the relayer topup, when all 8 relayers + 3 operators are near-zero,
+            // needs to drip ~11 × monTargetWei = 11 MON in a single dripMon call. lowWater
+            // must comfortably exceed that or the Faucet bottoms out mid-cycle and dripMon
+            // reverts with InsufficientMonBalance. 15 MON gives one cycle of margin; target
+            // 30 MON gives two cycles between refills so transient spikes don't drain it.
             //
             // Critical floor: 0.5 MON kept on the deployer at all times so the deployer can
             // still afford the eventual `withdrawMon` / governance txs even if the auto-loop
@@ -200,8 +205,8 @@ async function main(): Promise<void> {
                 deployerWalletClient: walletClient,
                 publicClient,
                 balances,
-                lowWater: oneMon * 2n,
-                target: oneMon * 10n,
+                lowWater: oneMon * 15n,
+                target: oneMon * 30n,
                 deployerCriticalFloor: oneMon / 2n,
                 log,
             });
@@ -248,6 +253,13 @@ async function main(): Promise<void> {
                     } else {
                         log.info({idx, address, role: "operator"}, "operator topup landed");
                     }
+                },
+                // When dripMon reverts with InsufficientMonBalance, ask the Faucet reserve
+                // loop to refill from the deployer right now instead of waiting for its next
+                // poll. Without this, a fast burst of relayer/operator drains can outpace
+                // the 30 s reserve-loop interval and leave the pool stalled.
+                onFaucetEmpty: () => {
+                    faucetReserve?.requestImmediate();
                 },
             });
             // M3.5 — funder for entering guests. M3.14 — submits as the funder operator,
