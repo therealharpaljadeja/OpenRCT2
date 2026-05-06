@@ -23,6 +23,7 @@ function mockBalances(initial: Record<`0x${string}`, bigint>): {
             nativeBalance: async (a) => balances[a] ?? 0n,
             parkBalance: async () => 0n,
             nativeBalances: async (addrs) => addrs.map((a) => balances[a] ?? 0n),
+            permitNonce: async () => 0n,
         },
     };
 }
@@ -194,6 +195,7 @@ test("RelayerTopUp loop survives a transient balance-read failure", async () => 
             }
             return RELAYERS.map(() => TARGET);
         },
+        permitNonce: async () => 0n,
     };
     const faucet = mockFaucet();
     const topup = new RelayerTopUp(reader, faucet.writer, {
@@ -334,6 +336,7 @@ test("M3.12: requestImmediate wakes the loop early", async () => {
             tickCount++;
             return addrs.map(() => TARGET);
         },
+        permitNonce: async () => 0n,
     };
     const topup = new RelayerTopUp(reader, faucet.writer, {
         relayers: RELAYERS,
@@ -373,6 +376,7 @@ test("M3.12: requestImmediate is idempotent within one wait window", async () =>
             tickCount++;
             return addrs.map(() => TARGET);
         },
+        permitNonce: async () => 0n,
     };
     const faucet = mockFaucet();
     const topup = new RelayerTopUp(reader, faucet.writer, {

@@ -13,6 +13,12 @@ export interface BalanceReader {
     /// We don't currently parallelize via `multicall` because Monad's `eth_call` throughput
     /// under our scale (≤16 relayers + 1 treasury) is already negligible.
     nativeBalances(addrs: readonly `0x${string}`[]): Promise<bigint[]>;
+    /// EIP-2612 permit nonce for `owner` on the PARK token. Reads `parkToken.nonces(owner)`.
+    /// Required at entry-time signing — guest addresses are deterministic from the master
+    /// mnemonic + hdIndex, so the same address can have nonzero nonce across sidecar
+    /// restarts (or any reuse of an hdIndex). Signing with a stale nonce reverts on chain
+    /// with `ERC2612InvalidSigner`.
+    permitNonce(owner: `0x${string}`): Promise<bigint>;
 }
 
 export interface BalanceReaderOptions {
@@ -37,5 +43,12 @@ export function createBalanceReader(opts: BalanceReaderOptions): BalanceReader {
             // testnet too.
             return Promise.all(addrs.map((a) => publicClient.getBalance({address: a})));
         },
+        permitNonce: (owner) =>
+            publicClient.readContract({
+                address: parkToken,
+                abi: PARK_TOKEN_ABI,
+                functionName: "nonces",
+                args: [owner],
+            }) as Promise<bigint>,
     };
 }

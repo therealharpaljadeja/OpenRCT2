@@ -595,19 +595,23 @@ async function main(): Promise<void> {
                         }
                         funder.accept({address, amount});
                     }
-                    if (permits && permitDom) {
-                        // Sign the permit off-chain. nonce=0 holds for fresh guests; M3.7's
-                        // sweeper signs a *separate* permit at exit (with spender=treasury)
-                        // because the entry-time permit went to SettlementBatcher and the
-                        // deployed batcher has no sweep entrypoint.
+                    if (permits && permitDom && balances) {
+                        // Sign the permit off-chain. The entry-time path used to assume
+                        // nonce=0 for "performance," but guest addresses are deterministic
+                        // from the master mnemonic + hdIndex — once an address has been
+                        // permitted (any prior session, or any hdIndex reuse) its on-chain
+                        // nonce is > 0, and signing with 0 reverts with ERC2612InvalidSigner.
+                        // Read the canonical nonce from chain before signing; one extra
+                        // eth_call per entry, batched by viem's keep-alive transport.
                         try {
                             const guestAccount = deriveGuest(unlocked.mnemonic, event.hdIndex);
                             const deadline = BigInt(Math.floor(Date.now() / 1000)) + permitDeadlineSecs;
+                            const onChainNonce = await balances.permitNonce(address);
                             const signed = await signPermit(guestAccount.account, permitDom, {
                                 owner: address,
                                 spender: batcherAddr,
                                 value: permitValue,
-                                nonce: 0n,
+                                nonce: onChainNonce,
                                 deadline,
                             });
                             permits.accept(signed);
