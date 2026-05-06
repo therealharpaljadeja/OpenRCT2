@@ -77,7 +77,11 @@ static int RunSecondProducer(const std::filesystem::path& walPath)
         std::fprintf(stderr, "outbox.Start failed (second)\n");
         return 1;
     }
-    outbox.PushGuestEntry(99, 1, 100'000'000'000'000'000ULL);
+    // 50 PARK in wei (5 × 10^19) — exceeds uint64 max (~1.84 × 10^19) by ~3×, so this
+    // line is the regression check that the wire format still round-trips for amounts
+    // that overflow the old uint64-only path.
+    unsigned __int128 fiftyParkWei = static_cast<unsigned __int128>(50) * static_cast<unsigned __int128>(1'000'000'000'000'000'000ULL);
+    outbox.PushGuestEntry(99, 1, fiftyParkWei);
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
     outbox.Stop();
     auto stats = outbox.GetStats();

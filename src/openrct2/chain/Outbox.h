@@ -111,13 +111,15 @@ namespace OpenRCT2::Chain
         // -------- Producer API (single-thread; game tick) --------
         // `cashWei` and `amountWei` are integer wei values; the caller converts in-game
         // money to wei. Sidecar parses these as bigint per its uint256 ABI contract.
+        // `unsigned __int128` covers the full range needed at kGameMoneyToWei = 10^17 —
+        // even the wealthiest guest's CashInPocket fits comfortably below 2^128.
 
-        void PushGuestEntry(int32_t guestId, uint32_t hdIndex, uint64_t cashWei);
+        void PushGuestEntry(int32_t guestId, uint32_t hdIndex, unsigned __int128 cashWei);
         void PushGuestSpend(
             int32_t guestId,
             uint32_t hdIndex,
             uint32_t venueId,
-            uint64_t amountWei,
+            unsigned __int128 amountWei,
             SpendCategory category,
             uint64_t gameTick);
         void PushGuestExit(int32_t guestId, uint32_t hdIndex);

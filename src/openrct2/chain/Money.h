@@ -16,18 +16,17 @@
 namespace OpenRCT2::Chain
 {
     // Scale factor from in-game money64 (fixed_64_1dp; 1 unit = 0.1 currency) to PARK wei.
-    // 10^15 picks a regime where guests' default initial cash (~500 units = £50) maps to
-    // 5 × 10^17 wei = 0.5 PARK — small enough to leave room for spends, large enough that
-    // dispersed amounts read as recognisable PARK figures in explorers. uint64 holds game
-    // values up to 9.2 × 10^3 units after scaling, well above any plausible CashInPocket
-    // or single-spend amount.
-    inline constexpr uint64_t kGameMoneyToWei = 1'000'000'000'000'000ULL;
+    // 10^17 maps $1 in-game → 1 PARK on chain (1 unit = $0.10 → 0.1 PARK). Block explorers
+    // show readable token quantities that track in-game prices 1:1. Above uint64 for any
+    // plausible game value (default starting cash $50 = 5 × 10^19 wei), so we widen the
+    // outbox amount field to unsigned __int128 — the contract side already uses uint256.
+    inline constexpr unsigned __int128 kGameMoneyToWei = static_cast<unsigned __int128>(100'000'000'000'000'000ULL);
 
-    inline uint64_t GameMoneyToWei(int64_t money)
+    inline unsigned __int128 GameMoneyToWei(int64_t money)
     {
         if (money <= 0)
-            return 0ULL;
-        return static_cast<uint64_t>(money) * kGameMoneyToWei;
+            return 0;
+        return static_cast<unsigned __int128>(money) * kGameMoneyToWei;
     }
 } // namespace OpenRCT2::Chain
 

@@ -167,6 +167,34 @@ namespace OpenRCT2::Chain
             return true;
         }
 
+        // Decimal printer for unsigned __int128 — snprintf has no format specifier for it.
+        // Used for the `amount` field which can exceed uint64 at kGameMoneyToWei = 10^17.
+        // 2^128 ≈ 3.4 × 10^38, so 40 chars is always enough.
+        bool AppendUnsigned128(char* dst, std::size_t cap, std::size_t* pos, unsigned __int128 v)
+        {
+            if (v == 0)
+            {
+                if (cap - *pos < 1)
+                    return false;
+                dst[*pos] = '0';
+                *pos += 1;
+                return true;
+            }
+            char buf[40];
+            int len = 0;
+            while (v > 0)
+            {
+                buf[len++] = static_cast<char>('0' + static_cast<int>(v % 10));
+                v /= 10;
+            }
+            if (cap - *pos < static_cast<std::size_t>(len))
+                return false;
+            for (int i = 0; i < len; ++i)
+                dst[*pos + i] = buf[len - 1 - i];
+            *pos += static_cast<std::size_t>(len);
+            return true;
+        }
+
         bool AppendSigned(char* dst, std::size_t cap, std::size_t* pos, int64_t v)
         {
             int n = std::snprintf(dst + *pos, cap - *pos, "%lld", static_cast<long long>(v));
@@ -199,7 +227,7 @@ namespace OpenRCT2::Chain
             int32_t guestId;
             uint32_t hdIndex;
             uint32_t venueId;
-            uint64_t amount;   // GUEST_ENTRY.cash or GUEST_SPEND.amount (wei)
+            unsigned __int128 amount; // GUEST_ENTRY.cash or GUEST_SPEND.amount (wei)
             uint64_t gameTick; // GUEST_SPEND only
             uint16_t nameLen;
             uint16_t objectTypeLen;
@@ -458,7 +486,7 @@ namespace OpenRCT2::Chain
                         return 0;
                     if (!AppendLiteral(out, cap, &pos, ",\"cash\":\""))
                         return 0;
-                    if (!AppendUnsigned(out, cap, &pos, r.amount))
+                    if (!AppendUnsigned128(out, cap, &pos, r.amount))
                         return 0;
                     if (!AppendLiteral(out, cap, &pos, "\""))
                         return 0;
@@ -478,7 +506,7 @@ namespace OpenRCT2::Chain
                         return 0;
                     if (!AppendLiteral(out, cap, &pos, ",\"amount\":\""))
                         return 0;
-                    if (!AppendUnsigned(out, cap, &pos, r.amount))
+                    if (!AppendUnsigned128(out, cap, &pos, r.amount))
                         return 0;
                     if (!AppendLiteral(out, cap, &pos, "\""))
                         return 0;
@@ -684,7 +712,7 @@ namespace OpenRCT2::Chain
         return _impl->nextHdIndex.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void Outbox::PushGuestEntry(int32_t guestId, uint32_t hdIndex, uint64_t cashWei)
+    void Outbox::PushGuestEntry(int32_t guestId, uint32_t hdIndex, unsigned __int128 cashWei)
     {
         Record r{};
         r.kind = Record::Kind::GuestEntry;
@@ -698,7 +726,7 @@ namespace OpenRCT2::Chain
         int32_t guestId,
         uint32_t hdIndex,
         uint32_t venueId,
-        uint64_t amountWei,
+        unsigned __int128 amountWei,
         SpendCategory category,
         uint64_t gameTick)
     {

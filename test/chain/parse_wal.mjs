@@ -52,7 +52,9 @@ const expected = [
     {kind: "GUEST_EXIT", seq: 5, guestId: 42, hdIndex: 0},
     {kind: "VENUE_REMOVED", seq: 6, venueId: 1},
     // Second producer (after re-open) — proves seq resumes monotonically past the tail.
-    {kind: "GUEST_ENTRY", seq: 7, guestId: 99, hdIndex: 1, cash: "100000000000000000"},
+    // 50 PARK in wei = 50 × 10^18; exceeds uint64 max (~1.84 × 10^19) so this row
+    // doubles as the regression check on the widened-to-uint128 amount field.
+    {kind: "GUEST_ENTRY", seq: 7, guestId: 99, hdIndex: 1, cash: "50000000000000000000"},
 ];
 
 if (lines.length !== expected.length) {
