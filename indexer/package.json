@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "description": "Envio HyperIndex project for the OpenRCT2 × Monad demo park.",
-  "type": "module",
   "scripts": {
     "codegen": "envio codegen",
     "dev": "envio dev",
