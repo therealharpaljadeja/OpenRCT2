@@ -95,6 +95,18 @@ fi
 sed "s|^\([[:space:]]*\)start_block:.*|\1start_block: $START_BLOCK|" \
   "$indexer_dir/config.yaml" > "$RUNTIME_CONFIG"
 
-echo "info: launching envio dev with start_block=$START_BLOCK ($RUNTIME_CONFIG)"
 cd "$indexer_dir"
+
+# The handlers import `from "generated"`. Envio's codegen emits the generated/ package
+# but doesn't symlink it into node_modules — Node's resolver then can't find it and the
+# indexer crashes at handler-load time with `Cannot find package 'generated'`. Materialise
+# the symlink directly so the wrapper has no package-manager dependency. Idempotent: on
+# re-runs the existing symlink is left untouched.
+if [[ -d generated && ! -e node_modules/generated ]]; then
+  mkdir -p node_modules
+  ln -sfn ../generated node_modules/generated
+  echo "info: linked node_modules/generated -> ../generated"
+fi
+
+echo "info: launching envio dev with start_block=$START_BLOCK ($RUNTIME_CONFIG)"
 exec npx envio dev --config config.runtime.yaml
