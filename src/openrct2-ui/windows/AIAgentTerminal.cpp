@@ -345,9 +345,10 @@ namespace
                 { "NotoSansSymbols-Regular.ttf", "Noto Sans Symbols", false },
                 { "NotoSansSymbols2-Regular.ttf", "Noto Sans Symbols 2", false },
             } };
-            // 14pt provides better anti-aliasing at typical game UI scales and improves readability
-            // in the in-game terminal by reducing choppy/jagged character rendering.
-            static constexpr int32_t kTerminalFontPointSize = 14;
+            // 11pt — compact variant; cells stay legible while the window footprint shrinks
+            // ~20% vs the old 14pt. Window default + minimum below scales accordingly so the
+            // visible column count is preserved.
+            static constexpr int32_t kTerminalFontPointSize = 11;
 
             auto LoadFont = [&](const FontSpec& spec) -> TTF_Font* {
                 u8string filename;
@@ -576,7 +577,10 @@ namespace OpenRCT2::Ui::Windows
         WIDX_HIDDEN_TEXTBOX,
     };
 
-    constexpr ScreenSize kAgentWindowSize = { 672, 544 };
+    // Initial + minimum window size. Sized to roughly preserve the column count of the
+    // pre-shrink default (672×544 at 14pt) at the new 11pt font — cells are ~20% smaller,
+    // so the window can be ~20% smaller without losing visible columns.
+    constexpr ScreenSize kAgentWindowSize = { 480, 400 };
     constexpr ScreenSize kAgentWindowMaxSize = { 1600, 1200 };
     constexpr int32_t kTerminalPadding = 4;
     constexpr int32_t kSidebarWidth = 40;
