@@ -124,8 +124,8 @@ print_spends() {
           3) cat="facility" ;; 4) cat="entry" ;; 5) cat="atm" ;;
           *) cat="?$category" ;;
         esac
-        printf "${DIM}%-9s${RESET}  spend  ${kc}%-22s${RESET} ${FG_YEL}%9s PARK${RESET}  ${DIM}%s • %s • %s${RESET}\n" \
-          "$block" "${name:0:22}" "$(park "$amount")" "$cat" "${guest:0:10}…" "${tx:0:10}…"
+        printf "${DIM}%-9s${RESET}  spend  ${kc}%-22s${RESET} ${FG_YEL}%9s PARK${RESET}  ${DIM}%s • %s… • %s${RESET}\n" \
+          "$block" "${name:0:22}" "$(park "$amount")" "$cat" "${guest:0:10}" "$tx"
       done
   last_spend_block=$(echo "$resp" | jq -r '.data.Spend | last | .block')
 }
@@ -151,8 +151,8 @@ print_batches() {
   [[ "$count" == "0" ]] && return 0
   echo "$resp" | jq -r '.data.Batch[] | [.block, .count, .txHash] | @tsv' \
     | while IFS=$'\t' read -r block n tx; do
-        printf "${DIM}%-9s${RESET}  ${FG_CYN}batch${RESET}  ${DIM}settled %s spend(s) • %s…${RESET}\n" \
-          "$block" "$n" "${tx:0:10}"
+        printf "${DIM}%-9s${RESET}  ${FG_CYN}batch${RESET}  ${DIM}settled %s spend(s) • %s${RESET}\n" \
+          "$block" "$n" "$tx"
       done
   last_batch_block=$(echo "$resp" | jq -r '.data.Batch | last | .block')
 }

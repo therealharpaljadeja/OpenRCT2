@@ -138,12 +138,12 @@ function printSpend(s) {
     const kc = KIND_COLOR[s.venue?.kindLabel] ?? C.reset;
     const cat = CATEGORY_LABEL[s.category] ?? `?${s.category}`;
     const name = (s.venue?.name ?? "(unknown)").slice(0, 22);
-    const guest = (s.guest?.id ?? "0x?").slice(0, 12);
-    const tx = (s.txHash ?? "?").slice(0, 12);
+    const guest = (s.guest?.id ?? "0x?").slice(0, 10);
+    const tx = s.txHash ?? "?"; // full — the user pastes this into the explorer
     process.stdout.write(
         `${C.dim}${String(s.block).padEnd(9)}${C.reset}  spend  ${kc}${name.padEnd(22)}${C.reset} `
             + `${C.yellow}${park(s.amount).padStart(9)} PARK${C.reset}  `
-            + `${C.dim}${cat.padEnd(8)} • ${guest}… • ${tx}…${C.reset}\n`,
+            + `${C.dim}${cat.padEnd(8)} • ${guest}… • ${tx}${C.reset}\n`,
     );
 }
 function printVenue(v) {
@@ -155,10 +155,10 @@ function printVenue(v) {
     );
 }
 function printBatch(b) {
-    const tx = (b.txHash ?? "?").slice(0, 12);
+    const tx = b.txHash ?? "?"; // full — the user pastes this into the explorer
     process.stdout.write(
         `${C.dim}${String(b.block).padEnd(9)}${C.reset}  ${C.cyan}batch${C.reset}  `
-            + `${C.dim}settled ${b.count} spend(s) • ${tx}…${C.reset}\n`,
+            + `${C.dim}settled ${b.count} spend(s) • ${tx}${C.reset}\n`,
     );
 }
 function printLoan(l) {
