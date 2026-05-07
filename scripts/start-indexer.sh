@@ -57,9 +57,13 @@ fi
 START_BLOCK=""
 
 if [[ -z "$CHAIN_DIR" ]]; then
-  # Mirror chain-spend-debug.sh's auto-discovery: look for a freshly-written
-  # indexer-start-block under the user's home or /tmp.
-  CHAIN_DIR=$(find "$HOME" /tmp -maxdepth 6 -name indexer-start-block -mmin -1440 2>/dev/null | head -n1 | xargs -r dirname)
+  # Look for a freshly-written indexer-start-block under the user's home or /tmp.
+  # `xargs -r` is GNU-only and silently aborts on macOS BSD xargs, so do the dirname
+  # explicitly with a guard.
+  hit=$(find "$HOME" /tmp -maxdepth 6 -name indexer-start-block -mmin -1440 2>/dev/null | head -n1 || true)
+  if [[ -n "$hit" ]]; then
+    CHAIN_DIR=$(dirname "$hit")
+  fi
 fi
 
 if [[ -n "$CHAIN_DIR" && -f "$CHAIN_DIR/indexer-start-block" ]]; then
