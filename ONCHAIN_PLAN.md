@@ -569,9 +569,9 @@ Not blocking the throughput demo. Monadscan + `rctctl chain` already surface eve
 
 ### M7 — Indexer (Envio) (2 days) — **DEFERRED (low priority)**
 Not blocking the demo — Monadscan can render `GuestSpend` events directly from on-chain logs, and `rctctl chain` reads aggregates from the sidecar. Envio is only needed once we want a per-venue / per-guest feed UI.
-- [ ] **7.1** Bootstrap `OpenRCT2/indexer/` HyperIndex project (`config.yaml`, `schema.graphql`, handlers in TS).
-- [ ] **7.2** Handlers for `VenueRegistered`/`Renamed`/`Removed`, `GuestSpend`, `Entry`/`Exit`, `LoanChanged`/`Bankruptcy`.
-- [ ] **7.3** Envio cloud deploy script.
+- [x] **7.1** Bootstrap `OpenRCT2/indexer/` HyperIndex project (`config.yaml`, `schema.graphql`, handlers in TS). Lands in `OpenRCT2/indexer/`; `npm install && npx envio codegen && npx tsc -p . --noEmit` runs clean from scratch.
+- [x] **7.2** Handlers for `VenueRegistered`/`Renamed`/`Retargeted`/`Removed`, `GuestSpend`, `BatchSettled`, `Entry`/`Exit`, `LoanChanged`/`InterestAccrued`/`Bankruptcy`. Upserts Guest/Venue first-touch from a spend in case order ever inverts (HyperSync delivers in order — safety net only).
+- [x] **7.3** Envio cloud deploy script at `scripts/deploy-indexer.sh` — wraps `envio cloud deploy` with `--dry-run` support.
 - [ ] **7.4** `rctctl chain feed` GraphQL subscription client (~150 LoC) — joins `Spend` → `Venue.name`.
 - [ ] **7.5** `--venue`, `--guest`, `--kind`, `--json` filters via GraphQL where-clauses.
 
