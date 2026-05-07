@@ -1,0 +1,70 @@
+# Schema for the OpenRCT2 park indexer. Each entity maps to a real on-chain identity:
+#
+#   Guest   = ERC-20 wallet address derived from the master mnemonic + hdIndex
+#   Venue   = entry in VenueRegistry, keyed by chain venueId (epoch << 16 | gameId)
+#   Spend   = single SettlementBatcher.GuestSpend log (one row per spend on chain)
+#   LoanState = singleton row mirroring LendingPool's last-seen state
+#
+# `@derivedFrom` lets us walk Guest → Spend or Venue → Spend in one query without a
+# manual relation field on Spend (the FK lives on Spend's `guest` and `venue` columns).
+
+type Guest {
+  id: ID!                 # lowercased address (0x…)
+  guestId: BigInt!        # game-side id (the in-game peep id) — populated by Entry, may be 0 until then
+  address: String!        # mirrors id, but kept as a column for indexers that filter by canonical case
+  entryBlock: BigInt
+  exitBlock: BigInt
+  totalSpent: BigInt!     # cumulative GuestSpend.amount
+  spendCount: Int!
+  spends: [Spend!]! @derivedFrom(field: "guest")
+}
+
+type Venue {
+  id: ID!                 # chain venueId as decimal string (uint32)
+  venueId: BigInt!        # mirrors id; queryable as a number
+  kind: Int!              # VenueRegistry.VenueKind: 0 ParkEntrance / 1 Ride / 2 Shop / 3 Stall / 4 Facility / 5 ATM
+  kindLabel: String!      # human-readable kind so the feed renderer doesn't need its own lookup
+  name: String!
+  objectType: String!
+  subAccount: String!     # hex address; lowercased
+  active: Boolean!
+  registeredAtBlock: BigInt!
+  totalRevenue: BigInt!   # cumulative GuestSpend.amount where venueId matches
+  spendCount: Int!
+  spends: [Spend!]! @derivedFrom(field: "venue")
+}
+
+type Spend {
+  id: ID!                 # `${txHash}-${logIndex}`
+  guest: Guest!
+  venue: Venue!
+  category: Int!          # SpendCategory: 0 RideFare / 1 ShopPrimary / 2 ShopSecondary / 3 FacilityUse / 4 Entry / 5 AtmFee
+  amount: BigInt!         # PARK wei (18 decimals)
+  block: BigInt!
+  blockTimestamp: BigInt!
+  txHash: String!
+  gameTick: BigInt!
+}
+
+# Singleton — id always "loan". We update this on every LoanChanged / InterestAccrued /
+# Bankruptcy and the game queries it on a slow poll (plan §5.3).
+type LoanState {
+  id: ID!
+  principal: BigInt!
+  ratePerBlock: BigInt!
+  maxBorrow: BigInt!
+  bankrupt: Boolean!
+  bankruptcyDeficit: BigInt
+  bankruptcyAtBlock: BigInt
+  lastUpdatedBlock: BigInt!
+}
+
+# Per-batch metadata — useful for "blocks/sec settle throughput" charts. Keyed by tx hash
+# since every settle batch produces exactly one BatchSettled event.
+type Batch {
+  id: ID!                 # txHash
+  count: BigInt!
+  block: BigInt!
+  blockTimestamp: BigInt!
+  txHash: String!
+}

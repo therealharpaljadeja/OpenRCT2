@@ -1,0 +1,65 @@
+# Envio HyperIndex config for the OpenRCT2 × Monad demo park.
+#
+# Indexes the four park contracts on Monad testnet (chainId 10143). The deploy block is
+# pulled from contracts/deployments/monad-testnet.json — bumping it on redeploy lets the
+# indexer skip irrelevant history rather than start from genesis.
+#
+# Schema + handler shapes are documented in OpenRCT2/ONCHAIN_PLAN.md §8.
+
+name: openrct2-park-indexer
+description: Live-feed indexer for the OpenRCT2 × Monad demo park (venues, spends, guests, loans).
+
+# Surface tx hash on every event so handlers can build a stable Spend.id (txHash-logIndex)
+# and Batch.id (txHash). Envio omits the hash by default to keep the wire format lean.
+field_selection:
+  transaction_fields:
+    - hash
+
+contracts:
+  - name: VenueRegistry
+    handler: src/EventHandlers.ts
+    events:
+      - event: VenueRegistered(uint32 indexed id, uint8 indexed kind, string name, string objectType, address subAccount)
+      - event: VenueRenamed(uint32 indexed id, string newName)
+      - event: VenueRetargeted(uint32 indexed id, address newSubAccount)
+      - event: VenueRemoved(uint32 indexed id)
+
+  - name: SettlementBatcher
+    handler: src/EventHandlers.ts
+    events:
+      - event: GuestSpend(address indexed guest, uint32 indexed venueId, uint8 indexed kind, uint8 category, uint256 amount, uint64 gameTick)
+      - event: BatchSettled(uint256 count)
+
+  - name: GuestRegistry
+    handler: src/EventHandlers.ts
+    events:
+      - event: Entry(uint256 indexed guestId, address indexed addr, uint64 entryBlock)
+      - event: Exit(uint256 indexed guestId, address indexed addr, uint64 exitBlock)
+
+  - name: LendingPool
+    handler: src/EventHandlers.ts
+    events:
+      - event: LoanChanged(uint256 newPrincipal, uint256 ratePerBlock, uint256 maxBorrow)
+      - event: InterestAccrued(uint256 added, uint256 newPrincipal, uint256 atBlock)
+      - event: Bankruptcy(uint256 deficit, uint256 atBlock)
+
+networks:
+  - id: 10143
+    start_block: 29424477
+    contracts:
+      - name: VenueRegistry
+        address:
+          - 0x6384430d201E8fF6bF6bee8Acb99882b0A119270
+      - name: SettlementBatcher
+        address:
+          - 0x67d35905B93d4F4a82a5CDcca8c0400198F57B52
+      - name: GuestRegistry
+        address:
+          - 0xa2dd713F0dC6138640c7Fb8fac660812787a9902
+      - name: LendingPool
+        address:
+          - 0x8A06cEc79E7C6BfB399Be57c9e653A35f56fF4E9
+
+# Envio HyperSync supports Monad testnet; rpc_config left unset uses the default HyperSync URL.
+# Override via `--rpc <url>` on `envio dev` if you want to hit a different node.
+unordered_multichain_mode: false
