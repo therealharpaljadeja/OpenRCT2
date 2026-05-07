@@ -15,16 +15,14 @@
  *     instead of computed at query time. Keeps the live feed cheap; the cost is one
  *     extra read+write per spend, which Envio batches inside a single block transaction.
  */
-// Standard Envio idiom: import from the `generated` workspace package. Resolves
-// correctly when the indexer is set up via pnpm install (uses pnpm-workspace.yaml +
-// the "generated": "workspace:*" dep below). pnpm hoists the transitive deps so the
-// rescript-compiled runtime can find @envio-dev/hypersync-client + friends.
-import {
-  GuestRegistry,
-  LendingPool,
-  SettlementBatcher,
-  VenueRegistry,
-} from "generated";
+// `generated/index.js` is a CJS module that spreads its handler exports dynamically
+// (`module.exports = { ...handlers, ... }`). Node's ESM resolver can't synthesize
+// named imports across that spread — `import { GuestRegistry } from "generated"`
+// fails at runtime with "Named export 'GuestRegistry' not found." A default import
+// lands the whole CJS module object via Node's CJS-to-ESM interop, which we then
+// destructure for type-safe access. Works under both CJS and ESM loaders.
+import generated from "generated";
+const {GuestRegistry, LendingPool, SettlementBatcher, VenueRegistry} = generated;
 
 const ZERO = 0n;
 const LOAN_ID = "loan";
