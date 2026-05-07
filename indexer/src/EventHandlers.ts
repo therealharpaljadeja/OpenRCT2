@@ -15,12 +15,17 @@
  *     instead of computed at query time. Keeps the live feed cheap; the cost is one
  *     extra read+write per spend, which Envio batches inside a single block transaction.
  */
+// Relative import into the codegen output. The Envio templates use `from "generated"` and
+// rely on a pnpm workspace symlink, but Node's ESM resolver (used when Envio loads
+// handlers in some runtimes) is strict about node_modules layout and that path is
+// fragile across pnpm/npm/symlink combinations. The relative path is unambiguous and
+// works on every package-manager setup with no extra wiring.
 import {
   GuestRegistry,
   LendingPool,
   SettlementBatcher,
   VenueRegistry,
-} from "generated";
+} from "../generated/src/Handlers.gen.js";
 
 const ZERO = 0n;
 const LOAN_ID = "loan";

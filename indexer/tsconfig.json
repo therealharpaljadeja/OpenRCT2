@@ -12,11 +12,7 @@
     "resolveJsonModule": true,
     "lib": ["ES2022"],
     "types": ["node"],
-    "outDir": "dist",
-    "baseUrl": ".",
-    "paths": {
-      "generated": ["./generated/src/Handlers.gen.ts"]
-    }
+    "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "generated", "**/node_modules/**"]
