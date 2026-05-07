@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Envio HyperIndex project for the OpenRCT2 × Monad demo park.",
+  "packageManager": "pnpm@10.33.4",
   "scripts": {
     "codegen": "envio codegen",
     "dev": "envio dev",
@@ -10,6 +11,9 @@
     "stop": "envio stop",
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "generated": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

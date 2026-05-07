@@ -15,17 +15,16 @@
  *     instead of computed at query time. Keeps the live feed cheap; the cost is one
  *     extra read+write per spend, which Envio batches inside a single block transaction.
  */
-// Relative import into the codegen output. The Envio templates use `from "generated"` and
-// rely on a pnpm workspace symlink, but Node's ESM resolver (used when Envio loads
-// handlers in some runtimes) is strict about node_modules layout and that path is
-// fragile across pnpm/npm/symlink combinations. The relative path is unambiguous and
-// works on every package-manager setup with no extra wiring.
+// Standard Envio idiom: import from the `generated` workspace package. Resolves
+// correctly when the indexer is set up via pnpm install (uses pnpm-workspace.yaml +
+// the "generated": "workspace:*" dep below). pnpm hoists the transitive deps so the
+// rescript-compiled runtime can find @envio-dev/hypersync-client + friends.
 import {
   GuestRegistry,
   LendingPool,
   SettlementBatcher,
   VenueRegistry,
-} from "../generated/src/Handlers.gen.js";
+} from "generated";
 
 const ZERO = 0n;
 const LOAN_ID = "loan";

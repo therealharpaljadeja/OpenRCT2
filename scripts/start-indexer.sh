@@ -97,5 +97,18 @@ sed "s|^\([[:space:]]*\)start_block:.*|\1start_block: $START_BLOCK|" \
 
 cd "$indexer_dir"
 
+# pnpm-workspace setup: the handlers import `from "generated"` which resolves to the
+# generated/ workspace package. pnpm install at indexer/ wires the symlink AND hoists
+# generated/'s transitive deps (e.g. @envio-dev/hypersync-client) so the rescript-compiled
+# runtime can require() them at handler-load time. Run on every launch to keep things
+# in sync with the latest codegen output (cheap when nothing changed).
+if ! command -v pnpm >/dev/null; then
+  echo "error: 'pnpm' not in PATH but the indexer is a pnpm workspace project." >&2
+  echo "       Install with:  npm i -g pnpm    (or 'corepack enable pnpm' on Node 16.13+)" >&2
+  exit 2
+fi
+echo "info: pnpm install (sets up generated/ workspace symlink + transitive deps)"
+pnpm install --silent
+
 echo "info: launching envio dev with start_block=$START_BLOCK ($RUNTIME_CONFIG)"
-exec npx envio dev --config config.runtime.yaml
+exec pnpm exec envio dev --config config.runtime.yaml
