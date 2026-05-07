@@ -2,8 +2,10 @@
 // Live on-chain activity feed — push-based via Hasura GraphQL subscriptions.
 //
 // Connects to the indexer's WebSocket endpoint (default ws://localhost:8080/v1/graphql)
-// and subscribes to spends, venues, batches, and loan changes. Hasura pushes new rows
-// the moment they're written; no polling cadence to tune.
+// and subscribes to spends, venue registrations, and loan changes. Hasura pushes new rows
+// the moment they're written; no polling cadence to tune. Per-batch info is omitted —
+// every spend already carries the full batch tx hash, so a separate summary line is
+// strictly duplicate noise.
 //
 // Companion to chain-feed.sh — the bash version polls every interval and works without
 // Node. This one is push-based but needs Node 22.4+ for the built-in WebSocket global.
@@ -116,13 +118,6 @@ function venueSub(cursor) {
       }
     }`;
 }
-function batchSub(cursor) {
-    return `subscription StreamBatches {
-      Batch_stream(cursor: {initial_value: {block: "${cursor}"}, ordering: ASC}, batch_size: 50) {
-        block count txHash
-      }
-    }`;
-}
 function loanSub(cursor) {
     // Singleton — use a plain subscription that re-fires whenever the row is updated past
     // the cursor. The `_gt` filter prevents Hasura from re-emitting unchanged state.
@@ -154,13 +149,6 @@ function printVenue(v) {
             + `${kc}${name.padEnd(22)}${C.reset}  ${C.dim}registered  id=${v.id}  kind=${v.kindLabel}${C.reset}\n`,
     );
 }
-function printBatch(b) {
-    const tx = b.txHash ?? "?"; // full — the user pastes this into the explorer
-    process.stdout.write(
-        `${C.dim}${String(b.block).padEnd(9)}${C.reset}  ${C.cyan}batch${C.reset}  `
-            + `${C.dim}settled ${b.count} spend(s) • ${tx}${C.reset}\n`,
-    );
-}
 function printLoan(l) {
     const color = l.bankrupt ? C.red : C.green;
     process.stdout.write(
@@ -175,11 +163,10 @@ function printLoan(l) {
 let cursors = {
     spend: opts.since,
     venue: opts.since,
-    batch: opts.since,
     loan: opts.since,
 };
 
-const SUB_IDS = {spend: "1", venue: "2", batch: "3", loan: "4"};
+const SUB_IDS = {spend: "1", venue: "2", loan: "3"};
 
 function connect() {
     const ws = new WebSocket(wsUrl, ["graphql-transport-ws"]);
@@ -196,7 +183,6 @@ function connect() {
                 // back to the right printer.
                 ws.send(JSON.stringify({type: "subscribe", id: SUB_IDS.spend, payload: {query: spendSub(cursors.spend)}}));
                 ws.send(JSON.stringify({type: "subscribe", id: SUB_IDS.venue, payload: {query: venueSub(cursors.venue)}}));
-                ws.send(JSON.stringify({type: "subscribe", id: SUB_IDS.batch, payload: {query: batchSub(cursors.batch)}}));
                 ws.send(JSON.stringify({type: "subscribe", id: SUB_IDS.loan, payload: {query: loanSub(cursors.loan)}}));
                 process.stdout.write(
                     `${C.dim}feed: ${wsUrl}   filter: kind=${opts.kind ?? "any"} venue=${opts.venue ?? "any"}${C.reset}\n`
@@ -239,11 +225,6 @@ function handleData(id, data) {
             printVenue(v);
             cursors.venue = String(v.registeredAtBlock);
         }
-    } else if (id === SUB_IDS.batch && Array.isArray(data.Batch_stream)) {
-        for (const b of data.Batch_stream) {
-            printBatch(b);
-            cursors.batch = String(b.block);
-        }
     } else if (id === SUB_IDS.loan && Array.isArray(data.LoanState)) {
         for (const l of data.LoanState) {
             printLoan(l);
@@ -256,7 +237,6 @@ function resubscribe(ws, id) {
     const builders = {
         [SUB_IDS.spend]: () => ({id, payload: {query: spendSub(cursors.spend)}}),
         [SUB_IDS.venue]: () => ({id, payload: {query: venueSub(cursors.venue)}}),
-        [SUB_IDS.batch]: () => ({id, payload: {query: batchSub(cursors.batch)}}),
         [SUB_IDS.loan]: () => ({id, payload: {query: loanSub(cursors.loan)}}),
     };
     const b = builders[id];

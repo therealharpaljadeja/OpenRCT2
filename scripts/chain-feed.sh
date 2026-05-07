@@ -2,7 +2,9 @@
 # Live on-chain activity feed against the local indexer's GraphQL endpoint.
 #
 # Polls the indexer (default http://localhost:8080/v1/graphql) every 1s for new spends,
-# venue registrations, batch settles, and loan state changes; prints color-coded lines.
+# venue registrations, and loan state changes; prints color-coded lines. Per-batch info
+# is omitted on purpose — every spend already includes the full batch tx hash, so a
+# separate batch summary line just duplicates info.
 # No deps beyond curl + jq, both standard on macOS and most Linux distros.
 #
 # Usage:
@@ -107,7 +109,6 @@ gql() {
 # ---- per-stream cursors ---------------------------------------------------
 last_spend_block="$SINCE_BLOCK"
 last_venue_block="$SINCE_BLOCK"
-last_batch_block="$SINCE_BLOCK"
 last_loan_block="$SINCE_BLOCK"
 
 print_spends() {
@@ -144,19 +145,6 @@ print_venues() {
   last_venue_block=$(echo "$resp" | jq -r '.data.Venue | last | .registeredAtBlock')
 }
 
-print_batches() {
-  local q="query{ Batch(where: {block: {_gt: \"$last_batch_block\"}}, order_by: {block: asc}, limit: 50) { id count block txHash } }"
-  local resp; resp=$(gql "$q") || return 0
-  local count; count=$(echo "$resp" | jq -r '.data.Batch | length // 0')
-  [[ "$count" == "0" ]] && return 0
-  echo "$resp" | jq -r '.data.Batch[] | [.block, .count, .txHash] | @tsv' \
-    | while IFS=$'\t' read -r block n tx; do
-        printf "${DIM}%-9s${RESET}  ${FG_CYN}batch${RESET}  ${DIM}settled %s spend(s) • %s${RESET}\n" \
-          "$block" "$n" "$tx"
-      done
-  last_batch_block=$(echo "$resp" | jq -r '.data.Batch | last | .block')
-}
-
 print_loan() {
   # singleton — poll its lastUpdatedBlock as the cursor
   local q="query{ LoanState_by_pk(id: \"loan\") { principal ratePerBlock maxBorrow bankrupt lastUpdatedBlock } }"
@@ -186,7 +174,6 @@ trap 'echo; echo "(feed stopped)"; exit 0' INT TERM
 while true; do
   print_spends
   print_venues
-  print_batches
   print_loan
   sleep "$INTERVAL"
 done
