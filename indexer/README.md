@@ -18,15 +18,54 @@ in-handler so live-feed queries stay cheap.
 
 ## Running locally
 
+The recommended path is via the wrapper that aligns the indexer's `start_block` to the
+running sidecar's session boundary:
+
 ```bash
-cd indexer
-npm install
-npm run codegen          # regenerate generated/ from config.yaml + schema.graphql
-npm run dev              # start indexer + GraphQL on localhost (default port 8080)
+npm install                        # one-time (in indexer/)
+../scripts/start-indexer.sh        # auto-discovers chain workspace + launches envio dev
+```
+
+The wrapper reads `<chainDir>/indexer-start-block` (written by the sidecar at boot) and
+generates `config.runtime.yaml` with `start_block` patched to that value. Each sidecar
+restart re-emits a fresh start block, so re-running the script lines the index up with
+exactly this session's events. Anything from previous epochs (different namespaces of
+venueIds) is skipped — keeps the index focused on what's live.
+
+Other modes:
+
+```bash
+../scripts/start-indexer.sh --baseline       # use config.yaml's deploy block (full history)
+../scripts/start-indexer.sh /path/to/chain   # explicit chain dir
+../scripts/start-indexer.sh --rpc <url>      # fall back to chain head if no sidecar found
+```
+
+Direct (no wrapper) — full history from contract deploy:
+
+```bash
+npm run codegen                    # regenerate generated/ from config.yaml + schema.graphql
+npm run dev                        # GraphQL on http://localhost:8080/v1/graphql
 ```
 
 The GraphQL endpoint is at `http://localhost:8080/v1/graphql`. The Envio dashboard is on
 port 8081 — drop into it to see indexing progress, error counts, etc.
+
+## How it discovers venues and guests
+
+You don't need Envio's dynamic-contracts (factory) feature here. Venue sub-accounts and
+guest wallets aren't separate contracts — they're CREATE2 receiver addresses (no code) and
+EOAs (no code), respectively. Everything we need rides inside events from the four fixed
+contracts:
+
+| New entity | Discovered via | Stored in |
+|---|---|---|
+| `Venue` | `VenueRegistry.VenueRegistered(id, kind, name, ...)` | `Venue` entity, keyed by chain venueId |
+| `Guest` | `GuestRegistry.Entry(guestId, addr, ...)` | `Guest` entity, keyed by lowercased address |
+| `Spend` | `SettlementBatcher.GuestSpend(guest, venueId, ...)` | `Spend` entity + aggregate updates on Guest/Venue |
+
+The handlers do first-touch upserts on `Guest` and `Venue` whenever a `Spend` references
+one we haven't seen yet — so out-of-order delivery (rare on HyperSync, but possible across
+reorgs) doesn't drop rows.
 
 ## Deploying to Envio cloud
 

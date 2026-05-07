@@ -43,6 +43,15 @@ export interface SidecarRuntime {
     /// deployer EOA. Surfaces deployer-low alarms via `chain.faucetReserve.status` so the
     /// in-game terminal can show a banner before the pipeline stalls.
     faucetReserve?: FaucetReserveTopUp;
+    /// Chain head at sidecar boot. The indexer launcher (`scripts/start-indexer.sh`)
+    /// reads this — either from the on-disk file or via `chain.indexer.config` — so its
+    /// `start_block` matches the sidecar's session boundary and pre-session events from
+    /// previous epochs don't pollute the index.
+    indexerStartBlock?: bigint;
+    /// Directory containing the `indexer-start-block` file (the sidecar's chain workspace
+    /// — same dir as the outbox WAL). Surfaced via IPC so external tools don't have to
+    /// rediscover the workspace.
+    indexerChainDir?: string;
     /// Batch accumulator (M3.2). Always present; runs idle until M3.5 wires the funder /
     /// outbox to feed it and M3.3 swaps the no-op sink for the relayer pool.
     batcher?: Batcher;
@@ -350,6 +359,24 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("chain.faucetReserve.status", () =>
         runtime.faucetReserve ? {enabled: true, ...runtime.faucetReserve.stats()} : {enabled: false},
     );
+    // Indexer config — start block + chain workspace + the four contract addresses the
+    // indexer needs. Lets `scripts/start-indexer.sh` (and any future rctctl helper) launch
+    // an Envio session aligned to this sidecar's epoch without re-deriving anything.
+    server.register("chain.indexer.config", () => {
+        if (runtime.indexerStartBlock === undefined) return {enabled: false};
+        return {
+            enabled: true,
+            startBlock: runtime.indexerStartBlock.toString(),
+            chainDir: runtime.indexerChainDir ?? null,
+            chainId: runtime.config.deployments.chainId,
+            contracts: {
+                venueRegistry: runtime.config.deployments.demoPark.venueRegistry,
+                settlementBatcher: runtime.config.deployments.demoPark.settlementBatcher,
+                guestRegistry: runtime.config.deployments.demoPark.guestRegistry,
+                lendingPool: runtime.config.deployments.demoPark.lendingPool,
+            },
+        };
+    });
     // Park earnings — one-shot summary the in-game agent uses to brief the human.
     // Aggregates per-venue PARK balances (each venue's CREATE2 sub-account is its lifetime
     // revenue ledger), the treasury operating budget, and the deployer's MON backstop.

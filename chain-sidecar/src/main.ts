@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {writeFileSync} from "node:fs";
+import * as path from "node:path";
 import {parseArgs} from "./config.js";
 import {
     deriveGuest,
@@ -120,6 +122,10 @@ async function main(): Promise<void> {
     let faucet: FaucetWriter | undefined;
     let topup: RelayerTopUp | undefined;
     let faucetReserve: FaucetReserveTopUp | undefined;
+    // Chain head at sidecar boot — persisted to <chainDir>/indexer-start-block and
+    // surfaced via `chain.indexer.config` so the indexer can start exactly here.
+    let indexerStartBlock: bigint | undefined;
+    let indexerChainDir: string | undefined;
     let funder: Funder | undefined;
     let permits: PermitCollector | undefined;
     let sweeper: Sweeper | undefined;
@@ -135,6 +141,22 @@ async function main(): Promise<void> {
         // sync tx submission and the read-side share the same HTTP transport policy.
         const clientOpts = {batch: config.rpcBatching, timeoutMs: config.rpcTimeoutMs};
         const publicClient = makePublicClient(config.deployments.chainId, config.rpcUrl, clientOpts);
+        // Capture the chain head at boot so the indexer can pick up exactly this session's
+        // events (anything earlier belongs to a previous epoch and shouldn't pollute the
+        // index). Persisted to <chainDir>/indexer-start-block alongside the WAL so the
+        // start-indexer.sh wrapper can find it without IPC, plus surfaced via
+        // `chain.indexer.config` for tools that prefer the JSON-RPC route.
+        try {
+            const block = await publicClient.getBlockNumber();
+            indexerStartBlock = block;
+            if (config.outboxPath) {
+                indexerChainDir = path.dirname(config.outboxPath);
+                writeFileSync(path.join(indexerChainDir, "indexer-start-block"), String(block));
+                log.info({block: block.toString(), dir: indexerChainDir}, "indexer start block captured");
+            }
+        } catch (err) {
+            log.warn({err}, "indexer-start-block capture failed (head read errored)");
+        }
         // M3.11 — per-guest sig-nonce tracker. Always paired with chain plumbing because the
         // first-touch fetch reads SettlementBatcher.sigNonces[guest]. Offline mode skips the
         // dispatcher entirely (see below), so an absent tracker is fine.
@@ -424,6 +446,8 @@ async function main(): Promise<void> {
     if (faucet) runtime.faucet = faucet;
     if (topup) runtime.topup = topup;
     if (faucetReserve) runtime.faucetReserve = faucetReserve;
+    if (indexerStartBlock !== undefined) runtime.indexerStartBlock = indexerStartBlock;
+    if (indexerChainDir !== undefined) runtime.indexerChainDir = indexerChainDir;
     if (funder) runtime.funder = funder;
     if (permits) runtime.permits = permits;
     if (sweeper) runtime.sweeper = sweeper;
