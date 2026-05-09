@@ -105,6 +105,57 @@ namespace OpenRCT2::Chain::UiAddressLookup
             return c;
         }
 
+        // ---- Per-session venue epoch ---------------------------------------
+        // The sidecar mirror folds a 16-bit per-boot epoch into every chainId
+        // (`venues/epoch.ts`); the game emits raw gameIds (`rideId + 1`). We
+        // need the epoch to translate gameId -> chainId before calling
+        // `chain.venues.get`. Fetched once via `sidecar.status` and cached.
+
+        struct EpochCache
+        {
+            std::mutex mu;
+            bool resolved = false;
+            uint32_t epoch = 0;
+            int64_t nextRetryAt = 0;
+        };
+        EpochCache& VenueEpoch()
+        {
+            static EpochCache c;
+            return c;
+        }
+
+        std::optional<uint32_t> ResolveVenueEpoch(int64_t now)
+        {
+            auto& cache = VenueEpoch();
+            {
+                std::lock_guard<std::mutex> lock(cache.mu);
+                if (cache.resolved)
+                    return cache.epoch;
+                if (now < cache.nextRetryAt)
+                    return std::nullopt;
+            }
+            json_t result;
+            if (!SidecarClient::Call("sidecar.status", json_t::object(), result, kCallTimeoutMs)
+                || !result.is_object() || !result.contains("sessionEpoch")
+                || !result["sessionEpoch"].is_number_integer())
+            {
+                std::lock_guard<std::mutex> lock(cache.mu);
+                cache.nextRetryAt = now + kFailureCooldownMs;
+                return std::nullopt;
+            }
+            const auto raw = result["sessionEpoch"].get<int64_t>();
+            if (raw < 0 || raw > 0xFFFF)
+            {
+                std::lock_guard<std::mutex> lock(cache.mu);
+                cache.nextRetryAt = now + kFailureCooldownMs;
+                return std::nullopt;
+            }
+            std::lock_guard<std::mutex> lock(cache.mu);
+            cache.epoch = static_cast<uint32_t>(raw);
+            cache.resolved = true;
+            return cache.epoch;
+        }
+
         int64_t NowMs()
         {
             return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -207,12 +258,19 @@ namespace OpenRCT2::Chain::UiAddressLookup
         const auto now = NowMs();
         if (gOpenRCT2ChainEnabled && !IsInCooldown(cache, venueId, now))
         {
-            json_t params = { { "id", venueId } };
-            const json_t nestedKey = "venue";
-            if (auto addr = CallForAddress("chain.venues.get", params, "subAccount", &nestedKey))
+            // Translate gameId -> chainId by folding in the sidecar's per-session epoch.
+            // Without this the lookup would target a venueId the registry never saw and
+            // every paint would fall through to the synthetic stub.
+            if (const auto epoch = ResolveVenueEpoch(now); epoch.has_value())
             {
-                MemoiseHit(cache, venueId, *addr);
-                return *addr;
+                const uint32_t chainId = (*epoch << 16) | (venueId & 0xFFFFu);
+                json_t params = { { "id", chainId } };
+                const json_t nestedKey = "venue";
+                if (auto addr = CallForAddress("chain.venues.get", params, "subAccount", &nestedKey))
+                {
+                    MemoiseHit(cache, venueId, *addr);
+                    return *addr;
+                }
             }
             MemoiseMiss(cache, venueId, now);
         }

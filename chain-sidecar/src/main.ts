@@ -432,6 +432,7 @@ async function main(): Promise<void> {
 
     const runtime: SidecarRuntime = {
         config,
+        sessionEpoch,
         keystoreCreatedAt: unlocked.createdAt,
         keystoreCreated,
         relayers,

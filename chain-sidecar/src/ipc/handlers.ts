@@ -21,6 +21,10 @@ import type {RpcServer, Handler} from "./server.js";
 /// scenario).
 export interface SidecarRuntime {
     config: SidecarConfig;
+    /// Per-session venue id epoch (high 16 bits of the on-chain venueId). Surfaced via
+    /// `sidecar.status` so in-process callers (the in-game UI's address lookup, rctctl)
+    /// can compute `(epoch << 16) | gameId` without re-deriving it. See `venues/epoch.ts`.
+    sessionEpoch: number;
     keystoreCreatedAt: string;
     /// Whether the keystore was freshly generated on this boot vs loaded from disk. Used by
     /// the in-game UI to nudge the operator to back up the encrypted file the first time.
@@ -118,6 +122,10 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         startedAt: startedAt.toISOString(),
         uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
         socket: runtime.config.socketPath,
+        // Per-session epoch the venue mirror folds into every chainId. Callers that
+        // know a `gameId` (e.g. the in-game UI) compute the on-chain id with
+        // `(epoch << 16) | gameId` before invoking `chain.venues.get`.
+        sessionEpoch: runtime.sessionEpoch,
         deployments: {
             path: runtime.config.deploymentsPath,
             chainId: runtime.config.deployments.chainId,
