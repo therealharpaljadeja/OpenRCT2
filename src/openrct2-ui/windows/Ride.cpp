@@ -37,6 +37,9 @@
 #include <openrct2/actions/RideSetSettingAction.h>
 #include <openrct2/actions/RideSetStatusAction.h>
 #include <openrct2/audio/Audio.h>
+#ifdef OPENRCT2_CHAIN
+    #include <openrct2/chain/UiAddressLookup.h>
+#endif
 #include <openrct2/config/Config.h>
 #include <openrct2/core/String.hpp>
 #include <openrct2/core/String.hpp>
@@ -67,6 +70,7 @@
 #include <openrct2/ride/TrackDesign.h>
 #include <openrct2/ride/TrackDesignRepository.h>
 #include <openrct2/ride/Vehicle.h>
+#include <openrct2/ui/UiContext.h>
 #include <openrct2/ui/WindowManager.h>
 #include <openrct2/util/Util.h>
 #include <openrct2/windows/Intent.h>
@@ -138,6 +142,7 @@ namespace OpenRCT2::Ui::Windows
         WIDX_OPEN_LIGHT,
         WIDX_RIDE_TYPE,
         WIDX_RIDE_TYPE_DROPDOWN,
+        WIDX_COPY_WALLET,
 
         WIDX_VEHICLE_TYPE = 14,
         WIDX_VEHICLE_TYPE_DROPDOWN,
@@ -278,7 +283,8 @@ namespace OpenRCT2::Ui::Windows
         makeWidget({296,  62}, { 14,  14}, WidgetType::imgBtn,        WindowColour::secondary, ImageId(SPR_G2_RCT1_TEST_BUTTON_0),  STR_TEST_RIDE_TIP          ),
         makeWidget({296,  76}, { 14,  14}, WidgetType::imgBtn,        WindowColour::secondary, ImageId(SPR_G2_RCT1_OPEN_BUTTON_0),  STR_OPEN_RIDE_TIP          ),
         makeWidget({  3, 180}, {305,  12}, WidgetType::dropdownMenu,  WindowColour::secondary, STR_ARG_6_STRINGID                                              ),
-        makeWidget({297, 180}, { 11,  12}, WidgetType::button,        WindowColour::secondary, STR_DROPDOWN_GLYPH                                              )
+        makeWidget({297, 180}, { 11,  12}, WidgetType::button,        WindowColour::secondary, STR_DROPDOWN_GLYPH                                              ),
+        makeWidget({291, 166}, { 24,  24}, WidgetType::flatBtn,       WindowColour::secondary, ImageId(SPR_FINANCE),                STR_COPY_INPUT_TO_CLIPBOARD)  // Copy venue wallet address (chain-only)
     );
 
     // 0x009ADDA8
@@ -1651,6 +1657,23 @@ namespace OpenRCT2::Ui::Windows
                 case WIDX_DEMOLISH:
                     ContextOpenDetailWindow(WindowDetail::demolishRide, number);
                     break;
+#ifdef OPENRCT2_CHAIN
+                case WIDX_COPY_WALLET:
+                {
+                    // Venue id mirrors the M4.4 convention: rideId + 1 (0 reserved for park entrance).
+                    auto ride = GetRide(rideId);
+                    if (ride != nullptr)
+                    {
+                        const auto venueId = static_cast<uint32_t>(ride->id.ToUnderlying()) + 1u;
+                        if (auto addr = Chain::UiAddressLookup::TryGetVenueAddress(venueId))
+                        {
+                            const auto hex = Chain::UiAddressLookup::FormatHex(*addr);
+                            GetContext()->GetUiContext().SetClipboardText(hex.c_str());
+                        }
+                    }
+                    break;
+                }
+#endif
                 case WIDX_CLOSE_LIGHT:
                 case WIDX_SIMULATE_LIGHT:
                 case WIDX_TEST_LIGHT:
@@ -1686,7 +1709,11 @@ namespace OpenRCT2::Ui::Windows
 
         void MainResize()
         {
-            int32_t newMinHeight = 180;
+            // 180 = 5 right-column buttons (open/construction/rename/locate/demolish) + status row.
+            // +24 reserves vertical room for the WIDX_COPY_WALLET button + a wallet address line
+            // above the status label. Cost is acceptable in this fork even when chain is off —
+            // the strip just stays empty.
+            int32_t newMinHeight = 204;
             if (ThemeGetFlags() & UITHEME_FLAG_USE_LIGHTS_RIDE)
             {
                 newMinHeight += 20 + kRCT1LightOffset;
@@ -2360,9 +2387,10 @@ namespace OpenRCT2::Ui::Windows
             widgets[WIDX_OPEN_LIGHT].image = ImageId(openLightImage);
 
             const int32_t offset = gameState.cheats.allowArbitraryRideTypeChanges ? 15 : 0;
-            // Anchor main page specific widgets
+            // Anchor main page specific widgets. Viewport gives up 12 px at the bottom to
+            // make room for the wallet-address strip drawn above the status row by MainOnDraw.
             widgets[WIDX_VIEWPORT].right = width - 26;
-            widgets[WIDX_VIEWPORT].bottom = height - (14 + offset);
+            widgets[WIDX_VIEWPORT].bottom = height - (26 + offset);
             widgets[WIDX_STATUS].right = width - 26;
             widgets[WIDX_STATUS].top = height - (13 + offset);
             widgets[WIDX_STATUS].bottom = height - (3 + offset);
@@ -2443,6 +2471,19 @@ namespace OpenRCT2::Ui::Windows
                 widgets[i].top = widgetHeight;
                 widgets[i].bottom = widgetHeight + 23;
             }
+
+#ifdef OPENRCT2_CHAIN
+            // Copy wallet button sits in the right column right after WIDX_DEMOLISH.
+            widgets[WIDX_COPY_WALLET].left = width - 25;
+            widgets[WIDX_COPY_WALLET].right = width - 2;
+            widgets[WIDX_COPY_WALLET].top = widgetHeight;
+            widgets[WIDX_COPY_WALLET].bottom = widgetHeight + 23;
+            const auto venueId = static_cast<uint32_t>(ride->id.ToUnderlying()) + 1u;
+            const auto venueAddrAvailable = Chain::UiAddressLookup::TryGetVenueAddress(venueId).has_value();
+            widgets[WIDX_COPY_WALLET].type = venueAddrAvailable ? WidgetType::flatBtn : WidgetType::empty;
+#else
+            widgets[WIDX_COPY_WALLET].type = WidgetType::empty;
+#endif
         }
 
         StringId GetStatusOverallView(Formatter& ft) const
@@ -2620,6 +2661,20 @@ namespace OpenRCT2::Ui::Windows
             DrawTextEllipsised(
                 rt, windowPos + ScreenCoordsXY{ (widget->left + widget->right) / 2, widget->top }, widget->width(), rideStatus,
                 ft, { TextAlignment::centre });
+
+#ifdef OPENRCT2_CHAIN
+            // Truncated venue wallet address, sits in the strip above WIDX_STATUS.
+            const auto venueId = static_cast<uint32_t>(ride->id.ToUnderlying()) + 1u;
+            if (auto walletAddr = Chain::UiAddressLookup::TryGetVenueAddress(venueId))
+            {
+                const auto shortHex = Chain::UiAddressLookup::FormatHexShort(*walletAddr);
+                auto walletFt = Formatter();
+                walletFt.Add<StringId>(STR_STRING);
+                walletFt.Add<const char*>(shortHex.c_str());
+                const auto addrPos = windowPos + ScreenCoordsXY{ (widget->left + widget->right) / 2, widget->top - 12 };
+                DrawTextEllipsised(rt, addrPos, widget->width(), STR_WINDOW_COLOUR_2_STRINGID, walletFt, { TextAlignment::centre });
+            }
+#endif
         }
 
 #pragma endregion
