@@ -284,7 +284,7 @@ namespace OpenRCT2::Ui::Windows
         makeWidget({296,  76}, { 14,  14}, WidgetType::imgBtn,        WindowColour::secondary, ImageId(SPR_G2_RCT1_OPEN_BUTTON_0),  STR_OPEN_RIDE_TIP          ),
         makeWidget({  3, 180}, {305,  12}, WidgetType::dropdownMenu,  WindowColour::secondary, STR_ARG_6_STRINGID                                              ),
         makeWidget({297, 180}, { 11,  12}, WidgetType::button,        WindowColour::secondary, STR_DROPDOWN_GLYPH                                              ),
-        makeWidget({291, 166}, { 24,  24}, WidgetType::flatBtn,       WindowColour::secondary, ImageId(SPR_FINANCE),                STR_COPY_INPUT_TO_CLIPBOARD)  // Copy venue wallet address (chain-only)
+        makeWidget({291, 166}, { 24,  24}, WidgetType::flatBtn,       WindowColour::secondary, ImageId(SPR_G2_COPY),                STR_COPY_INPUT_TO_CLIPBOARD)  // Copy venue wallet address (chain-only)
     );
 
     // 0x009ADDA8

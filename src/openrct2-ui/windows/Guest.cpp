@@ -141,7 +141,7 @@ namespace OpenRCT2::Ui::Windows
         makeWidget({167,  69}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_RENAME),     STR_NAME_GUEST_TIP           ), // Rename Button
         makeWidget({167,  93}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_LOCATE),     STR_LOCATE_SUBJECT_TIP       ), // Locate Button
         makeWidget({167, 117}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_TRACK_PEEP), STR_TOGGLE_GUEST_TRACKING_TIP), // Track Button
-        makeWidget({167, 141}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_FINANCE),    STR_COPY_INPUT_TO_CLIPBOARD  )  // Copy wallet address button (chain-only)
+        makeWidget({167, 141}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_G2_COPY),    STR_COPY_INPUT_TO_CLIPBOARD  )  // Copy wallet address button (chain-only)
     );
 
     static constexpr auto _guestWindowWidgetsStats = makeWidgets(
