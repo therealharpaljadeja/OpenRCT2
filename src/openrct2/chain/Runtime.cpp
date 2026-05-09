@@ -29,6 +29,7 @@ namespace OpenRCT2::Chain
         std::mutex gRuntimeMutex;
         std::unique_ptr<SidecarProcess> gSidecar;
         bool gOutboxStarted = false;
+        std::string gSocketPath; // mirrors what we passed to `--socket`; "" while down.
 
         std::filesystem::path FindSidecarEntry(const std::filesystem::path& repoRoot)
         {
@@ -190,6 +191,7 @@ namespace OpenRCT2::Chain
             gSidecar.reset();
             return false;
         }
+        gSocketPath = socketPath.string();
         LOG_INFO("chain.runtime: up; wal=%s socket=%s", walPath.string().c_str(), socketPath.string().c_str());
         return true;
     }
@@ -208,12 +210,19 @@ namespace OpenRCT2::Chain
             SetOutbox(nullptr);
             gOutboxStarted = false;
         }
+        gSocketPath.clear();
     }
 
     bool IsRuntimeUp()
     {
         std::lock_guard<std::mutex> lock(gRuntimeMutex);
         return gOutboxStarted && gSidecar && gSidecar->IsRunning();
+    }
+
+    std::string GetSidecarSocketPath()
+    {
+        std::lock_guard<std::mutex> lock(gRuntimeMutex);
+        return gSocketPath;
     }
 } // namespace OpenRCT2::Chain
 

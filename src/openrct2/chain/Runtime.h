@@ -41,6 +41,12 @@ namespace OpenRCT2::Chain
     void TeardownRuntime();
 
     bool IsRuntimeUp();
+
+    // UDS socket path the sidecar listens on (`<workspace>/chain/sidecar.sock`).
+    // Empty when the runtime is down. Surfaced so in-process JSON-RPC clients
+    // (e.g. SidecarClient used by the UI to resolve guest / venue addresses)
+    // can find the socket without re-deriving the path.
+    std::string GetSidecarSocketPath();
 } // namespace OpenRCT2::Chain
 
 #endif // OPENRCT2_CHAIN
