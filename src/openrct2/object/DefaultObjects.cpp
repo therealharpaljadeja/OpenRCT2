@@ -122,7 +122,7 @@ namespace OpenRCT2
         "rct2.climate.warm",
     };
 
-    constexpr std::array<std::string_view, 37> kDefaultScenarioObjects = {
+    constexpr std::array<std::string_view, 40> kDefaultScenarioObjects = {
         "rct2.ride.twist1", // Ride: Twist
         "rct2.ride.ptct1",  // Ride: Wooden Roller Coaster (Wooden Roller Coaster Trains)
         "rct2.ride.zldb",   // Ride: Junior Roller Coaster (Ladybird Trains)
@@ -139,6 +139,11 @@ namespace OpenRCT2
         "rct2.ride.balln",  // Ride: Balloon Stall
         "rct2.ride.arrt1",  // Ride: Corkscrew Roller Coaster
         "rct2.ride.rboat",  // Ride: Rowing Boats
+
+        // fork: Monad-branded custom objects, auto-included in every new scenario
+        "monad.ride.coffee",
+        "monad.ride.balloons",
+        "monad.scenery_large.sign",
 
         // The following are for all random map generation features to work out the box
         "rct2.scenery_group.scgjungl", // Jungle Theming

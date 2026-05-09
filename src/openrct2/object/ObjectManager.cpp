@@ -215,6 +215,24 @@ namespace OpenRCT2
             // Load the required objects
             LoadObjects(requiredObjects, reportProgress);
 
+            // fork: always inject Monad-branded custom objects on every park
+            // load so they're available without manual Object Selection.
+            // GetLoadedObject() returns nullptr if the identifier isn't loaded
+            // yet; LoadObject() picks the next free slot. Silently no-ops if a
+            // .parkobj is missing from the user object dir.
+            static constexpr std::string_view kForkMonadObjects[] = {
+                "monad.ride.coffee",
+                "monad.ride.balloons",
+                "monad.scenery_large.sign",
+            };
+            for (auto id : kForkMonadObjects)
+            {
+                if (GetLoadedObject(ObjectEntryDescriptor(id)) == nullptr)
+                {
+                    LoadObject(id);
+                }
+            }
+
             // Update indices.
             UpdateSceneryGroupIndexes();
             ResetTypeToRideEntryIndexMap();

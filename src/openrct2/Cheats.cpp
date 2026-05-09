@@ -48,7 +48,7 @@ void CheatsReset()
     gameState.cheats.disablePlantAging = false;
     gameState.cheats.allowArbitraryRideTypeChanges = false;
     gameState.cheats.disableRideValueAging = false;
-    gameState.cheats.ignoreResearchStatus = false;
+    gameState.cheats.ignoreResearchStatus = true;  // fork: agent ignores research progression
     gameState.cheats.enableAllDrawableTrackPieces = false;
     gameState.cheats.allowTrackPlaceInvalidHeights = false;
     gameState.cheats.allowRegularPathAsQueue = false;
