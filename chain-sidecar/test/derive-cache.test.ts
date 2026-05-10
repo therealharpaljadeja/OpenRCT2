@@ -2,6 +2,7 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {deriveGuest} from "../src/derive/index.js";
 import {GuestAddressCache} from "../src/derive/cache.js";
+import {SessionContext} from "../src/session/index.js";
 
 const TEST_MNEMONIC = "test test test test test test test test test test test junk";
 
@@ -87,4 +88,41 @@ test("two caches with the same mnemonic produce identical addresses for the same
     for (const i of [0, 1, 17, 999]) {
         assert.equal(a.addressOf(i), b.addressOf(i));
     }
+});
+
+test("session-aware cache derives under the session's accountIndex", () => {
+    const session = new SessionContext(7);
+    const cache = new GuestAddressCache(TEST_MNEMONIC, session);
+    const direct = deriveGuest(TEST_MNEMONIC, 0, {accountIndex: 7}).address;
+    assert.equal(cache.addressOf(0), direct);
+});
+
+test("two sessions yield disjoint addresses for the same hdIndex", () => {
+    const sessionA = new SessionContext(1);
+    const sessionB = new SessionContext(2);
+    const cacheA = new GuestAddressCache(TEST_MNEMONIC, sessionA);
+    const cacheB = new GuestAddressCache(TEST_MNEMONIC, sessionB);
+    assert.notEqual(cacheA.addressOf(0), cacheB.addressOf(0));
+});
+
+test("session-change clears the cache so subsequent lookups derive under the new id", () => {
+    const session = new SessionContext(1);
+    const cache = new GuestAddressCache(TEST_MNEMONIC, session);
+    const beforeAddr = cache.addressOf(0);
+    assert.equal(cache.size(), 1);
+
+    session.change(2);
+    // Cache cleared on change, counters reset.
+    assert.equal(cache.size(), 0);
+    assert.deepEqual(cache.stats(), {size: 0, hits: 0, misses: 0});
+
+    const afterAddr = cache.addressOf(0);
+    assert.notEqual(afterAddr, beforeAddr, "address must change with session");
+    assert.equal(afterAddr, deriveGuest(TEST_MNEMONIC, 0, {accountIndex: 2}).address);
+});
+
+test("default (no session) cache preserves legacy accountIndex=0 derivation", () => {
+    const cache = new GuestAddressCache(TEST_MNEMONIC);
+    // Hardhat #0 — same vector as the no-arg deriveGuest test in derive.test.ts.
+    assert.equal(cache.addressOf(0), "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 });

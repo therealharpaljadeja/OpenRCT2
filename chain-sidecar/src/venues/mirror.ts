@@ -224,6 +224,16 @@ export class VenueMirror {
         return this.#cache.get(venueId);
     }
 
+    /// Drop every cached venue. Used on a session-change: every entry is keyed by chain
+    /// venue id `(epoch << 16) | gameId`, and the new session has a different epoch, so
+    /// no cached entry will ever be queried again. Pending in-flight register/rename/
+    /// remove ops continue to apply to the chain (they target the *previous* epoch's
+    /// chainIds, which are still valid on the long-lived registry); they just won't
+    /// re-populate this cache. Counters are preserved.
+    clearCache(): void {
+        this.#cache.clear();
+    }
+
     /// All currently-cached venues, in insertion order. The IPC `chain.venues.list` reads from
     /// this; rctctl will later expose it as a table.
     list(): CachedVenue[] {

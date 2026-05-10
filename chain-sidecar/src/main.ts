@@ -36,7 +36,8 @@ import {Funder} from "./funder/index.js";
 import {PermitCollector, permitDomain, signPermit} from "./permits/index.js";
 import {Sweeper} from "./sweeper/index.js";
 import {VenueMirror} from "./venues/index.js";
-import {applyEpoch, formatEpoch, generateEpoch, MAX_GAME_ID} from "./venues/epoch.js";
+import {applyEpoch, formatEpoch, MAX_GAME_ID} from "./venues/epoch.js";
+import {SessionContext, generateSessionId} from "./session/index.js";
 import {MetricsAggregator} from "./metrics/index.js";
 import {SpendRateLimiter} from "./ratelimit/index.js";
 import type {OutboxEvent} from "./outbox/index.js";
@@ -75,13 +76,19 @@ async function main(): Promise<void> {
         );
     }
 
-    // Per-session venue id namespace. Translates `gameId → (epoch << 16) | gameId` at the
-    // outbox-consumption boundary so the on-chain `VenueRegistry` never sees a colliding id
-    // across sessions. See `venues/epoch.ts`.
-    const sessionEpoch = config.sessionEpoch ?? generateEpoch();
+    // Per-game-session identity. Doubles as the venue chain-id epoch (high 16 bits of
+    // `(epoch << 16) | gameId`) and the BIP-44 `accountIndex` for guest HD derivation,
+    // so a single mutation flips both address spaces in one shot. The game emits
+    // `chain.session.begin { sessionId }` on every "new park" boundary; the boot value
+    // is a placeholder that gets overwritten on the first such call.
+    const session = new SessionContext(config.sessionEpoch ?? generateSessionId());
     log.info(
-        {epoch: sessionEpoch, epochHex: formatEpoch(sessionEpoch), overridden: config.sessionEpoch !== undefined},
-        "session venue-id epoch resolved",
+        {
+            sessionId: session.sessionId,
+            sessionIdHex: formatEpoch(session.sessionId),
+            overridden: config.sessionEpoch !== undefined,
+        },
+        "session id resolved (boot placeholder; awaits chain.session.begin from game)",
     );
 
     const relayers = relayerPool(unlocked.mnemonic, config.relayerCount);
@@ -106,7 +113,7 @@ async function main(): Promise<void> {
         "operator pool derived",
     );
 
-    const guestCache = new GuestAddressCache(unlocked.mnemonic);
+    const guestCache = new GuestAddressCache(unlocked.mnemonic, session);
 
     let outboxReader: OutboxReader | undefined;
     if (config.outboxPath && config.outboxCursorPath) {
@@ -328,7 +335,8 @@ async function main(): Promise<void> {
                 treasury: config.deployments.demoPark.treasury,
                 parkToken: config.deployments.globals.parkToken,
                 permitDomain: permitDomain(config.deployments.chainId, config.deployments.globals.parkToken),
-                deriveAccount: (idx) => deriveGuest(unlocked.mnemonic, idx).account,
+                deriveAccount: (idx) =>
+                    deriveGuest(unlocked.mnemonic, idx, {accountIndex: session.sessionId}).account,
                 permitDeadlineDays: config.permitDeadlineDays,
                 maxSize: config.sweeperWindowSize,
                 maxAgeMs: config.sweeperWindowAgeMs,
@@ -425,14 +433,28 @@ async function main(): Promise<void> {
               guestCache,
               nonces,
               domain: spendDom,
-              deriveAccount: (idx) => deriveGuest(unlocked.mnemonic, idx).account,
+              deriveAccount: (idx) =>
+                  deriveGuest(unlocked.mnemonic, idx, {accountIndex: session.sessionId}).account,
               log,
           })
         : undefined;
 
+    // Wire session-change resets. Order doesn't matter — each subsystem owns disjoint
+    // state. `guestCache` is wired internally (it needs `accountIndex` for derivation,
+    // so the SessionContext is passed in at construction time).
+    session.onChange((prev, next) => {
+        rateLimiter.clear();
+        nonces?.clear();
+        venueMirror?.clearCache();
+        log.info(
+            {prevSessionId: prev, nextSessionId: next},
+            "session changed: cleared rate-limit / nonce / venue-mirror caches",
+        );
+    });
+
     const runtime: SidecarRuntime = {
         config,
-        sessionEpoch,
+        session,
         keystoreCreatedAt: unlocked.createdAt,
         keystoreCreated,
         relayers,
@@ -629,7 +651,9 @@ async function main(): Promise<void> {
                         // Read the canonical nonce from chain before signing; one extra
                         // eth_call per entry, batched by viem's keep-alive transport.
                         try {
-                            const guestAccount = deriveGuest(unlocked.mnemonic, event.hdIndex);
+                            const guestAccount = deriveGuest(unlocked.mnemonic, event.hdIndex, {
+                                accountIndex: session.sessionId,
+                            });
                             const deadline = BigInt(Math.floor(Date.now() / 1000)) + permitDeadlineSecs;
                             const onChainNonce = await balances.permitNonce(address);
                             const signed = await signPermit(guestAccount.account, permitDom, {
@@ -680,7 +704,7 @@ async function main(): Promise<void> {
                     // Translate game ride index → on-chain venue id. See `venues/epoch.ts`.
                     let chainVenueId: number;
                     try {
-                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                        chainVenueId = applyEpoch(session.epoch, event.venueId);
                     } catch (err) {
                         log.warn({err, event, max: MAX_GAME_ID}, "VENUE_REGISTERED: gameId out of range — dropping");
                         break;
@@ -701,7 +725,7 @@ async function main(): Promise<void> {
                 case "VENUE_RENAMED": {
                     let chainVenueId: number;
                     try {
-                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                        chainVenueId = applyEpoch(session.epoch, event.venueId);
                     } catch (err) {
                         log.warn({err, event}, "VENUE_RENAMED: gameId out of range — dropping");
                         break;
@@ -716,7 +740,7 @@ async function main(): Promise<void> {
                 case "VENUE_REMOVED": {
                     let chainVenueId: number;
                     try {
-                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                        chainVenueId = applyEpoch(session.epoch, event.venueId);
                     } catch (err) {
                         log.warn({err, event}, "VENUE_REMOVED: gameId out of range — dropping");
                         break;
@@ -744,7 +768,7 @@ async function main(): Promise<void> {
                     }
                     let chainVenueId: number;
                     try {
-                        chainVenueId = applyEpoch(sessionEpoch, event.venueId);
+                        chainVenueId = applyEpoch(session.epoch, event.venueId);
                     } catch (err) {
                         log.warn({err, event}, "GUEST_SPEND: gameId out of range — dropping");
                         break;
@@ -769,7 +793,7 @@ async function main(): Promise<void> {
             permits: permits ? "configured" : null,
             sweeper: sweeper ? "configured" : null,
             venueMirror: venueMirror ? "configured" : null,
-            sessionEpoch: formatEpoch(sessionEpoch),
+            sessionEpoch: formatEpoch(session.epoch),
         },
         "sidecar ready",
     );
