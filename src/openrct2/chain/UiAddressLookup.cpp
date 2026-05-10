@@ -223,7 +223,12 @@ namespace OpenRCT2::Chain::UiAddressLookup
 
     std::optional<EthAddress> TryGetGuestAddress(uint32_t hdIndex)
     {
-        if (hdIndex == 0)
+        // hdIndex 0 is a *valid* derivation index — `Outbox::AllocateHdIndex()`
+        // hands out 0, 1, 2, ... so the first guest of a session legitimately
+        // has 0. We can't use 0 as a sentinel for "not assigned"; instead we
+        // gate on the runtime flag, which is what governs whether HdIndex was
+        // ever allocated in the first place.
+        if (!gOpenRCT2ChainEnabled)
             return std::nullopt;
 
         auto& cache = GuestCache();
@@ -231,7 +236,7 @@ namespace OpenRCT2::Chain::UiAddressLookup
             return cached;
 
         const auto now = NowMs();
-        if (gOpenRCT2ChainEnabled && !IsInCooldown(cache, hdIndex, now))
+        if (!IsInCooldown(cache, hdIndex, now))
         {
             json_t params = { { "index", hdIndex } };
             if (auto addr = CallForAddress("guest.address", params, "address"))
@@ -242,13 +247,15 @@ namespace OpenRCT2::Chain::UiAddressLookup
             MemoiseMiss(cache, hdIndex, now);
         }
         // Falling back to the synthetic stub keeps the UI populated when the
-        // sidecar is offline / the keystore hasn't materialised this guest yet.
+        // sidecar is unreachable / the keystore hasn't materialised this guest yet.
         return SynthesiseAddress(hdIndex, /*kind=*/0);
     }
 
     std::optional<EthAddress> TryGetVenueAddress(uint32_t venueId)
     {
-        if (venueId == 0)
+        // 0 is the kVenueIdEntrance sentinel; the in-game ride window never
+        // queries with it (rideId + 1 ≥ 1), but be defensive.
+        if (venueId == 0 || !gOpenRCT2ChainEnabled)
             return std::nullopt;
 
         auto& cache = VenueCache();
@@ -256,7 +263,7 @@ namespace OpenRCT2::Chain::UiAddressLookup
             return cached;
 
         const auto now = NowMs();
-        if (gOpenRCT2ChainEnabled && !IsInCooldown(cache, venueId, now))
+        if (!IsInCooldown(cache, venueId, now))
         {
             // Translate gameId -> chainId by folding in the sidecar's per-session epoch.
             // Without this the lookup would target a venueId the registry never saw and
