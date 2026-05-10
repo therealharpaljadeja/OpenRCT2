@@ -250,6 +250,20 @@ namespace OpenRCT2::Chain
             return 0;
         }
 
+        // Truncate the WAL + reset producer state BEFORE flipping the sidecar's
+        // session id. If we did this in the other order, the sidecar's reader
+        // would briefly see leftover session-A bytes in the WAL, translate them
+        // under the new session-B epoch (`applyEpoch` reads the live session id),
+        // and submit them to chain with the wrong chain venue id. Doing the C++
+        // truncate first guarantees the sidecar never reads a session-A byte
+        // under a session-B epoch — by the time it polls again, the WAL is empty
+        // and its `stat.size < readOffset` shrinkage detection clears its in-
+        // memory buffer + cursor automatically.
+        if (auto* outbox = GetOutbox())
+        {
+            outbox->Reset();
+        }
+
         // 16-bit session id. The sidecar enforces the same range; we generate it
         // here so the game-side log shows the chosen value alongside the call.
         // `random_device` is seeded once per call — fine, not a hot path (one

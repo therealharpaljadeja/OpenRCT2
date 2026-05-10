@@ -108,6 +108,15 @@ namespace OpenRCT2::Chain
         // Signal the writer thread to drain and exit; close the WAL.
         void Stop();
 
+        // New-game / new-session boundary: drain the writer queue, truncate the WAL to 0,
+        // reset the producer-side counters (nextSeq, nextHdIndex, announced-venue set),
+        // and restart the writer thread. After this returns the WAL is empty and any
+        // future Push* calls produce events at seq=0, hdIndex=0 — exactly what the new
+        // session expects so a sidecar restart can't replay old-session events under
+        // the new epoch. Caller is the game thread at `ScenarioBegin`; the producer is
+        // naturally quiescent there. No-op when the outbox isn't running.
+        void Reset();
+
         // -------- Producer API (single-thread; game tick) --------
         // `cashWei` and `amountWei` are integer wei values; the caller converts in-game
         // money to wei. Sidecar parses these as bigint per its uint256 ABI contract.

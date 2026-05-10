@@ -712,6 +712,66 @@ namespace OpenRCT2::Chain
         return _impl->nextHdIndex.fetch_add(1, std::memory_order_relaxed);
     }
 
+    void Outbox::Reset()
+    {
+        if (!_impl->running.load())
+            return;
+        // Quiesce the writer. The drain-on-shutdown loop inside `WriterLoop` writes any
+        // remaining ring entries to disk before the thread exits — that's fine, the
+        // truncate below wipes them all anyway. The point of the join is to make sure
+        // no one is holding the file pointer when we resize the file.
+        _impl->stopWanted.store(true, std::memory_order_release);
+        if (_impl->writerThread.joinable())
+            _impl->writerThread.join();
+        if (_impl->fp != nullptr)
+        {
+            std::fclose(_impl->fp);
+            _impl->fp = nullptr;
+        }
+
+        // Truncate the WAL. Sidecar's reader detects `stat.size < readOffset` on its
+        // next poll and resets its byte cursor + in-memory buffer to 0 — invisible to
+        // event flow modulo the loss-of-tail we want here.
+        std::error_code ec;
+        std::filesystem::resize_file(_impl->opts.walPath, 0, ec);
+        if (ec)
+        {
+            LOG_ERROR(
+                "chain.outbox: Reset failed to truncate WAL '%s': %s",
+                _impl->opts.walPath.c_str(),
+                ec.message().c_str());
+        }
+
+        // Producer state. nextSeq=0 is the same starting point Start() establishes on
+        // a fresh WAL (its ScanLastSeq returns -1 → +1 = 0). HdIndex resets so the new
+        // session derives guest 0 from accountIndex=<newSessionId>, address-index=0
+        // (the sidecar applies the new accountIndex; we pair it with addr-idx 0 here).
+        // The announced-venue dedupe set is per-session — old session ids don't apply.
+        _impl->nextSeq.store(0, std::memory_order_relaxed);
+        _impl->nextHdIndex.store(0, std::memory_order_relaxed);
+        _impl->announcedVenues.clear();
+        _impl->currentSize = 0;
+        // Counters that track lifetime activity (pushed/written/dropped/bytesWritten/
+        // rotations/writeErrors) are intentionally preserved — `outbox.status` reads
+        // them as cumulative-since-boot, useful for comparing sessions side-by-side.
+
+        // Re-open the WAL and restart the writer. OpenFp recreates the file in append
+        // mode (it was just truncated above; opening for append at size 0 is fine).
+        if (!_impl->OpenFp())
+        {
+            LOG_ERROR(
+                "chain.outbox: Reset failed to reopen WAL '%s' — outbox is now stopped",
+                _impl->opts.walPath.c_str());
+            _impl->running.store(false, std::memory_order_release);
+            return;
+        }
+        _impl->stopWanted.store(false, std::memory_order_release);
+        _impl->writerThread = std::thread([impl = _impl.get()] { impl->WriterLoop(); });
+        LOG_INFO(
+            "chain.outbox: reset; wal='%s' truncated, nextSeq=0, nextHdIndex=0",
+            _impl->opts.walPath.c_str());
+    }
+
     void Outbox::PushGuestEntry(int32_t guestId, uint32_t hdIndex, unsigned __int128 cashWei)
     {
         Record r{};
