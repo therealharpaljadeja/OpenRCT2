@@ -96,6 +96,14 @@ export class SpendRateLimiter {
         this.#buckets.delete(hdIndex);
     }
 
+    /// Drop every bucket. Used on a session-change (a new game starts): hdIndex 0 of the
+    /// new session would otherwise inherit the depleted bucket of hdIndex 0 from the old
+    /// session and get rate-limited unfairly for the first second. Counters are preserved
+    /// — they're cumulative over the sidecar's lifetime, useful for comparing sessions.
+    clear(): void {
+        this.#buckets.clear();
+    }
+
     /// Hot-tunable knob (operator can lower under abuse, raise during stress mode). Throws
     /// on invalid input so the IPC layer maps to InvalidParams.
     updateConfig(maxAuthPerSecond: number): void {

@@ -118,6 +118,20 @@ export class SpendNonceTracker {
         this.#stale.delete(key);
     }
 
+    /// Drop every cached nonce. Used on a session-change: every guest under the new
+    /// session derives to a different address, so the old map is just dead entries.
+    /// First-touch fetches re-populate as the new session's spends flow in.
+    clear(): void {
+        this.#nonces.clear();
+        this.#stale.clear();
+        // Pending in-flight initial fetches are left alone — they'll resolve, attempt
+        // to seed the (now-cleared) map, and naturally race with whatever the new
+        // session's first call kicks off. Either value is correct because the address
+        // they fetched for either matches the current session (no-op) or doesn't (the
+        // entry is unused). This is rare under the new-game flow because the WAL is
+        // truncated at the same boundary so nothing's mid-fetch.
+    }
+
     /// Mark addresses as stale — the next `next(addr)` re-fetches `sigNonces[addr]` from
     /// chain instead of using the local cache. M3.12: called by the relayer pool's terminal-
     /// failure handler when a batch's auths can't land but the local counter has already

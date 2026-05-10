@@ -13,6 +13,7 @@ import {Batcher, type Batch, type SinkResult} from "../src/batcher/index.js";
 import {RelayerPool, createNoopSubmitter} from "../src/relayers/index.js";
 import {MetricsAggregator} from "../src/metrics/index.js";
 import {SpendRateLimiter} from "../src/ratelimit/index.js";
+import {SessionContext} from "../src/session/index.js";
 
 /// Smoke test for the M2.1 IPC server. Boots a `RpcServer` on a temp UDS path, connects with
 /// `node:net`, exchanges line-delimited JSON-RPC messages, and tears down. If this passes,
@@ -56,6 +57,7 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
     const deployments = loadDeployments(deploymentsPath);
     const relayers = relayerPool(TEST_MNEMONIC, 4);
     const server = new RpcServer(sockPath);
+    const session = new SessionContext(0);
     const runtime: Parameters<typeof registerCoreHandlers>[1] = {
         config: {
             socketPath: sockPath,
@@ -65,10 +67,11 @@ async function withServer<T>(fn: (sock: string) => Promise<T>, opts: WithServerO
             keystorePassphrase: "test-passphrase",
             relayerCount: 4,
         },
+        session,
         keystoreCreatedAt: "2026-05-02T00:00:00.000Z",
         keystoreCreated: false,
         relayers,
-        guestCache: new GuestAddressCache(TEST_MNEMONIC),
+        guestCache: new GuestAddressCache(TEST_MNEMONIC, session),
     };
     if (opts.batcher) runtime.batcher = opts.batcher;
     if (opts.relayerPool) runtime.relayerPool = opts.relayerPool;
@@ -157,6 +160,136 @@ test("keystore.status returns the same payload as sidecar.status's keystore fiel
         const b = await callOnce(sock, {jsonrpc: "2.0", id: 2, method: "keystore.status"});
         const aKeystore = (a.result as {keystore: unknown}).keystore;
         assert.deepEqual(aKeystore, b.result);
+    });
+});
+
+test("chain.session.begin with explicit sessionId flips the runtime + reports old/new", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {sessionId: 0xabcd},
+        });
+        const result = r.result as {
+            changed: boolean;
+            previousSessionId: number;
+            sessionId: number;
+            sessionIdHex: string;
+        };
+        assert.equal(result.changed, true);
+        assert.equal(result.previousSessionId, 0);
+        assert.equal(result.sessionId, 0xabcd);
+        assert.equal(result.sessionIdHex, "0xabcd");
+
+        // sidecar.status reflects the new id.
+        const s = await callOnce(sock, {jsonrpc: "2.0", id: 2, method: "sidecar.status"});
+        const status = s.result as {sessionId: number; sessionEpoch: number};
+        assert.equal(status.sessionId, 0xabcd);
+        assert.equal(status.sessionEpoch, 0xabcd);
+    });
+});
+
+test("chain.session.begin with the same id is a no-op (changed: false)", async () => {
+    await withServer(async (sock) => {
+        await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {sessionId: 5},
+        });
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 2,
+            method: "chain.session.begin",
+            params: {sessionId: 5},
+        });
+        const result = r.result as {changed: boolean; sessionId: number};
+        assert.equal(result.changed, false);
+        assert.equal(result.sessionId, 5);
+    });
+});
+
+test("chain.session.begin with generate:true picks a fresh random id", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {generate: true},
+        });
+        const result = r.result as {sessionId: number; previousSessionId: number};
+        assert.ok(Number.isInteger(result.sessionId) && result.sessionId >= 0 && result.sessionId <= 0xffff);
+        assert.equal(result.previousSessionId, 0);
+    });
+});
+
+test("chain.session.begin rejects out-of-range sessionId with -32602", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {sessionId: 0x10000},
+        });
+        assert.equal(r.error?.code, -32602);
+        assert.match(r.error?.message ?? "", /out of \[0, 65535\]/);
+    });
+});
+
+test("chain.session.begin rejects unknown keys with -32602", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {sessionId: 1, foo: "bar"},
+        });
+        assert.equal(r.error?.code, -32602);
+        assert.match(r.error?.message ?? "", /unknown key 'foo'/);
+    });
+});
+
+test("chain.session.begin rejects sessionId + generate together with -32602", async () => {
+    await withServer(async (sock) => {
+        const r = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "chain.session.begin",
+            params: {sessionId: 1, generate: true},
+        });
+        assert.equal(r.error?.code, -32602);
+        assert.match(r.error?.message ?? "", /not both/);
+    });
+});
+
+test("chain.session.begin clears guest cache so subsequent guest.address derives under new id", async () => {
+    await withServer(async (sock) => {
+        // First derive under session 0.
+        const a = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "guest.address",
+            params: {index: 0},
+        });
+        const addrA = (a.result as {address: string}).address;
+
+        // Flip session.
+        await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 2,
+            method: "chain.session.begin",
+            params: {sessionId: 1},
+        });
+
+        const b = await callOnce(sock, {
+            jsonrpc: "2.0",
+            id: 3,
+            method: "guest.address",
+            params: {index: 0},
+        });
+        const addrB = (b.result as {address: string}).address;
+        assert.notEqual(addrA, addrB, "session change must produce a different guest address");
     });
 });
 

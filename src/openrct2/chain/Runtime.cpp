@@ -12,12 +12,17 @@
     #include "Runtime.h"
 
     #include "../Diagnostic.h"
+    #include "../OpenRCT2.h"
+    #include "../core/Json.hpp"
     #include "Outbox.h"
     #include "Sidecar.h"
+    #include "SidecarClient.h"
+    #include "UiAddressLookup.h"
 
     #include <cstdlib>
     #include <memory>
     #include <mutex>
+    #include <random>
     #include <string>
     #include <system_error>
     #include <unistd.h>
@@ -223,6 +228,70 @@ namespace OpenRCT2::Chain
     {
         std::lock_guard<std::mutex> lock(gRuntimeMutex);
         return gSocketPath;
+    }
+
+    uint32_t BeginNewSession()
+    {
+        // Cheap guard: if chain mode isn't on, the sidecar isn't there to talk to.
+        // We *also* still clear the C++ caches below in case a prior session left
+        // stale entries before chain mode was disabled — costs nothing.
+        if (!gOpenRCT2ChainEnabled)
+        {
+            UiAddressLookup::ClearCaches();
+            return 0;
+        }
+        if (!IsRuntimeUp())
+        {
+            // Runtime hasn't been spawned yet (chain mode is on, but the AI agent
+            // terminal hasn't launched). The first `EnsureRuntime` call will pick
+            // up the sidecar's boot-time placeholder session id; the next
+            // `ScenarioBegin` after that will run this path and flip it for real.
+            UiAddressLookup::ClearCaches();
+            return 0;
+        }
+
+        // Truncate the WAL + reset producer state BEFORE flipping the sidecar's
+        // session id. If we did this in the other order, the sidecar's reader
+        // would briefly see leftover session-A bytes in the WAL, translate them
+        // under the new session-B epoch (`applyEpoch` reads the live session id),
+        // and submit them to chain with the wrong chain venue id. Doing the C++
+        // truncate first guarantees the sidecar never reads a session-A byte
+        // under a session-B epoch — by the time it polls again, the WAL is empty
+        // and its `stat.size < readOffset` shrinkage detection clears its in-
+        // memory buffer + cursor automatically.
+        if (auto* outbox = GetOutbox())
+        {
+            outbox->Reset();
+        }
+
+        // 16-bit session id. The sidecar enforces the same range; we generate it
+        // here so the game-side log shows the chosen value alongside the call.
+        // `random_device` is seeded once per call — fine, not a hot path (one
+        // call per `ScenarioBegin`).
+        std::random_device rd;
+        std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFu);
+        const uint32_t sessionId = dist(rd);
+
+        json_t params = { { "sessionId", sessionId } };
+        json_t result;
+        // Wider timeout than UI-paint lookups: the sidecar resets several caches
+        // synchronously inside the handler. 500 ms is comfortably above the
+        // observed worst-case (~10 ms) without making a stalled sidecar a UX
+        // hazard at scenario start.
+        constexpr int kCallTimeoutMs = 500;
+        const bool ok = SidecarClient::Call("chain.session.begin", params, result, kCallTimeoutMs);
+        // Always clear C++ caches, even on IPC failure. The session id we passed
+        // *might* have landed (response lost on the way back); clearing keeps
+        // the UI from serving addresses that may now be wrong, at the cost of
+        // re-fetching them once. Conservative is the right tradeoff here.
+        UiAddressLookup::ClearCaches();
+        if (!ok)
+        {
+            LOG_WARNING("chain.session.begin: IPC call failed (sessionId=0x%04x)", sessionId);
+            return sessionId;
+        }
+        LOG_INFO("chain.session.begin: applied (sessionId=0x%04x)", sessionId);
+        return sessionId;
     }
 } // namespace OpenRCT2::Chain
 

@@ -1,4 +1,5 @@
 import {deriveGuest} from "./index.js";
+import type {SessionContext} from "../session/index.js";
 
 /// Address-only cache for guest HD wallets (plan §2.1, §2.3 / M2.3).
 ///
@@ -22,18 +23,29 @@ import {deriveGuest} from "./index.js";
 /// trivially small.
 export class GuestAddressCache {
     readonly #mnemonic: string;
+    readonly #session: SessionContext | undefined;
     readonly #addresses = new Map<number, `0x${string}`>();
     #hits = 0;
     #misses = 0;
 
-    constructor(mnemonic: string) {
+    constructor(mnemonic: string, session?: SessionContext) {
         if (typeof mnemonic !== "string" || mnemonic.length === 0) {
             throw new Error("GuestAddressCache: mnemonic must be a non-empty string");
         }
         this.#mnemonic = mnemonic;
+        this.#session = session;
+        // On session change every cached address is for a different HD path; clear so
+        // the next lookup re-derives under the new accountIndex. Counters reset too —
+        // hit/miss ratios from the previous session are misleading once the address
+        // space changes underneath them.
+        if (session) {
+            session.onChange(() => this.clear());
+        }
     }
 
-    /// Cheap path. Returns the cached address or derives + caches a new one.
+    /// Cheap path. Returns the cached address or derives + caches a new one. Derivation
+    /// uses the current session's `accountIndex` (0 when no session was provided), so the
+    /// cache is implicitly scoped to one session at a time.
     addressOf(index: number): `0x${string}` {
         if (!Number.isInteger(index) || index < 0) {
             throw new Error(`GuestAddressCache: invalid index ${index}`);
@@ -44,7 +56,8 @@ export class GuestAddressCache {
             return hit;
         }
         this.#misses++;
-        const derived = deriveGuest(this.#mnemonic, index).address;
+        const accountIndex = this.#session?.sessionId ?? 0;
+        const derived = deriveGuest(this.#mnemonic, index, {accountIndex}).address;
         this.#addresses.set(index, derived);
         return derived;
     }

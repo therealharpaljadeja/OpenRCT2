@@ -36,6 +36,13 @@ namespace OpenRCT2::Chain::UiAddressLookup
     // Compact rendering for tight UI: "0xABCDEF…12345678" (8 + 8). Always pairs
     // with FormatHex for the actual clipboard payload.
     std::string FormatHexShort(const EthAddress& addr);
+
+    // Drop every cached guest/venue lookup and the per-session venue epoch the UI
+    // resolved from `sidecar.status`. Called from `Chain::BeginNewSession()` after
+    // the sidecar's `chain.session.begin` flips its own caches: keeps the C++ UI
+    // from serving stale addresses (or the wrong epoch) for the lifetime of the
+    // failure-cooldown window. Idempotent.
+    void ClearCaches();
 } // namespace OpenRCT2::Chain::UiAddressLookup
 
 #endif // OPENRCT2_CHAIN

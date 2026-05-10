@@ -12,6 +12,7 @@ import type {Sweeper} from "../sweeper/index.js";
 import type {VenueMirror} from "../venues/index.js";
 import type {MetricsAggregator} from "../metrics/index.js";
 import type {SpendRateLimiter} from "../ratelimit/index.js";
+import {SessionContext, MAX_SESSION_ID, formatSessionId, generateSessionId} from "../session/index.js";
 import {ErrorCode, RpcError} from "./protocol.js";
 import type {RpcServer, Handler} from "./server.js";
 
@@ -21,10 +22,13 @@ import type {RpcServer, Handler} from "./server.js";
 /// scenario).
 export interface SidecarRuntime {
     config: SidecarConfig;
-    /// Per-session venue id epoch (high 16 bits of the on-chain venueId). Surfaced via
-    /// `sidecar.status` so in-process callers (the in-game UI's address lookup, rctctl)
-    /// can compute `(epoch << 16) | gameId` without re-deriving it. See `venues/epoch.ts`.
-    sessionEpoch: number;
+    /// Per-game-session identity. Used both as the BIP-44 `accountIndex` for guest HD
+    /// derivation and as the venue chain-id epoch (`& 0xFFFF`). The game flips this via
+    /// `chain.session.begin { sessionId }` on every "new park" boundary; subscribers
+    /// (rate limiter, venue mirror cache, sig-nonce tracker, guest address cache) are
+    /// reset transparently. Surfaced via `sidecar.status` (compat: `sessionEpoch` field
+    /// kept for in-process callers that already speak the M3.x epoch name).
+    session: SessionContext;
     keystoreCreatedAt: string;
     /// Whether the keystore was freshly generated on this boot vs loaded from disk. Used by
     /// the in-game UI to nudge the operator to back up the encrypted file the first time.
@@ -107,7 +111,7 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         // Addresses only — never the private keys, never the mnemonic. The keystore is the
         // only thing on disk that can recover those, and it stays at rest.
         relayers: runtime.relayers.map((r, i) => ({index: i, address: r.address, path: r.path})),
-        guestPathPrefix: "m/44'/60'/0'/0",
+        guestPathPrefix: `m/44'/60'/${runtime.session.sessionId}'/0`,
         guestCache: runtime.guestCache.stats(),
     });
 
@@ -122,10 +126,11 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
         startedAt: startedAt.toISOString(),
         uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
         socket: runtime.config.socketPath,
-        // Per-session epoch the venue mirror folds into every chainId. Callers that
-        // know a `gameId` (e.g. the in-game UI) compute the on-chain id with
-        // `(epoch << 16) | gameId` before invoking `chain.venues.get`.
-        sessionEpoch: runtime.sessionEpoch,
+        // Per-session id used for both venue chain id translation and guest accountIndex.
+        // `sessionEpoch` is the legacy field name in-game callers still read for the
+        // venue translation `(epoch << 16) | gameId`; `sessionId` is the canonical name.
+        sessionId: runtime.session.sessionId,
+        sessionEpoch: runtime.session.epoch,
         deployments: {
             path: runtime.config.deploymentsPath,
             chainId: runtime.config.deployments.chainId,
@@ -152,6 +157,32 @@ export function registerCoreHandlers(server: RpcServer, runtime: SidecarRuntime)
     server.register("sidecar.status", status);
     server.register("sidecar.ping", ping);
     server.register("sidecar.shutdown", shutdown);
+    // Game-side hook: called on every "new park" boundary. Bumps the session id used
+    // by guest HD derivation and venue chain-id translation; the rate limiter, sig-nonce
+    // tracker, venue mirror cache, and guest address cache all reset transparently via
+    // the SessionContext's onChange subscribers.
+    //
+    // Params:
+    //   { sessionId: number }   — uint16, must be in [0, MAX_SESSION_ID]
+    //   { generate: true }      — sidecar generates a fresh random id (useful when the
+    //                             game has no source of randomness it trusts)
+    //   {}                      — same as generate:true
+    //
+    // Idempotent on the same id (returns `changed: false`).
+    server.register("chain.session.begin", (params) => {
+        const next = readSessionBeginParams(params);
+        const prev = runtime.session.sessionId;
+        const id = next ?? generateSessionId();
+        const changed = runtime.session.change(id);
+        return {
+            ok: true,
+            changed,
+            previousSessionId: prev,
+            previousSessionIdHex: formatSessionId(prev),
+            sessionId: runtime.session.sessionId,
+            sessionIdHex: formatSessionId(runtime.session.sessionId),
+        };
+    });
     server.register("keystore.status", () => keystoreStatus());
     // Game uses this on `SpawnGuest` to look up the guest's onchain address by HD index
     // (plan §5.1, §5.3 `GuestEntered`). Cheap after first call thanks to the cache.
@@ -614,6 +645,51 @@ function readBatchConfigPatch(params: unknown): {
         out[k as "maxSize" | "maxAgeMs" | "maxQueuedAuths"] = v;
     }
     return out;
+}
+
+/// Pull `{ sessionId } | { generate: true } | {}` out of the JSON-RPC params for
+/// `chain.session.begin`. Returns the explicit sessionId, or `undefined` to signal the
+/// caller wants the sidecar to generate a fresh one. InvalidParams on shape errors so
+/// a typo doesn't silently fall back to "generate".
+function readSessionBeginParams(params: unknown): number | undefined {
+    if (params === undefined || params === null) return undefined;
+    if (typeof params !== "object" || Array.isArray(params)) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            "chain.session.begin requires a JSON object body or no body",
+        );
+    }
+    const obj = params as Record<string, unknown>;
+    const allowed = new Set(["sessionId", "generate"]);
+    for (const k of Object.keys(obj)) {
+        if (!allowed.has(k)) {
+            throw new RpcError(
+                ErrorCode.InvalidParams,
+                `chain.session.begin: unknown key '${k}' (allowed: ${[...allowed].join(", ")})`,
+            );
+        }
+    }
+    if (obj.sessionId !== undefined && obj.generate === true) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            "chain.session.begin: pass either sessionId or generate:true, not both",
+        );
+    }
+    if (obj.generate === true) return undefined;
+    if (obj.sessionId === undefined) return undefined;
+    if (typeof obj.sessionId !== "number" || !Number.isInteger(obj.sessionId)) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            `chain.session.begin: sessionId must be an integer, got ${String(obj.sessionId)}`,
+        );
+    }
+    if (obj.sessionId < 0 || obj.sessionId > MAX_SESSION_ID) {
+        throw new RpcError(
+            ErrorCode.InvalidParams,
+            `chain.session.begin: sessionId out of [0, ${MAX_SESSION_ID}] range, got ${obj.sessionId}`,
+        );
+    }
+    return obj.sessionId;
 }
 
 /// Pull `{maxAuthPerSecond?}` out of the JSON-RPC params. Empty body → undefined (probe).

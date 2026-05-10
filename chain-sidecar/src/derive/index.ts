@@ -29,15 +29,36 @@ export interface DerivedAccount {
     account: HDAccount;
 }
 
+/// Per-session guest namespace. The BIP-44 `accountIndex` is hardened (0..2^31-1); we
+/// fold the session id into it so two sessions with distinct ids derive disjoint guest
+/// trees from the same mnemonic. Sessions widths are 16 bits today (see `session/`),
+/// well within the hardened range.
+export interface DeriveGuestOptions {
+    /// BIP-44 account index. Defaults to 0, which preserves the pre-session HD derivation
+    /// (Hardhat default at idx 0 → `0xf39F…2266`) so legacy tests and external derivation
+    /// callers keep their existing addresses unchanged.
+    accountIndex?: number;
+}
+
 /// Derive a single guest account. Index 0..N-1 maps to the game's `Guest::HdIndex`.
-export function deriveGuest(mnemonic: string, index: number): DerivedAccount {
+/// When `accountIndex` is set, the derivation path becomes `m/44'/60'/<accountIndex>'/0/<index>`
+/// so two sessions with distinct account indices yield disjoint guest addresses.
+export function deriveGuest(mnemonic: string, index: number, opts: DeriveGuestOptions = {}): DerivedAccount {
     if (!Number.isInteger(index) || index < 0) throw new Error(`invalid guest index: ${index}`);
+    const accountIndex = opts.accountIndex ?? 0;
+    if (!Number.isInteger(accountIndex) || accountIndex < 0) {
+        throw new Error(`invalid guest accountIndex: ${accountIndex}`);
+    }
     const account = mnemonicToAccount(mnemonic, {
-        accountIndex: 0,
+        accountIndex,
         changeIndex: CHANGE_GUEST,
         addressIndex: index,
     });
-    return {path: `m/44'/60'/0'/${CHANGE_GUEST}/${index}`, address: account.address, account};
+    return {
+        path: `m/44'/60'/${accountIndex}'/${CHANGE_GUEST}/${index}`,
+        address: account.address,
+        account,
+    };
 }
 
 /// Derive a single relayer account. The pool is treasury-funded and pays gas for batched
