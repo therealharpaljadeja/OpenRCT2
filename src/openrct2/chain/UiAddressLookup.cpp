@@ -303,6 +303,33 @@ namespace OpenRCT2::Chain::UiAddressLookup
         // 0x + first 6 + ellipsis + last 8 = "0xabcdef…12345678"
         return full.substr(0, 8) + "\xE2\x80\xA6" + full.substr(full.size() - 8);
     }
+
+    void ClearCaches()
+    {
+        // Order doesn't matter — each cache has its own mutex. The epoch cache is
+        // included so the next venue-id lookup re-fetches the sidecar's new session
+        // id rather than translating against the previous session's epoch (which
+        // would address a venue the new VenueRegistry entries don't share).
+        {
+            auto& g = GuestCache();
+            std::lock_guard<std::mutex> lock(g.mu);
+            g.hits.clear();
+            g.nextRetryAt.clear();
+        }
+        {
+            auto& v = VenueCache();
+            std::lock_guard<std::mutex> lock(v.mu);
+            v.hits.clear();
+            v.nextRetryAt.clear();
+        }
+        {
+            auto& e = VenueEpoch();
+            std::lock_guard<std::mutex> lock(e.mu);
+            e.resolved = false;
+            e.epoch = 0;
+            e.nextRetryAt = 0;
+        }
+    }
 } // namespace OpenRCT2::Chain::UiAddressLookup
 
 #endif // OPENRCT2_CHAIN

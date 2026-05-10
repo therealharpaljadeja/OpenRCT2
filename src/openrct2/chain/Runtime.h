@@ -11,6 +11,7 @@
 
 #ifdef OPENRCT2_CHAIN
 
+    #include <cstdint>
     #include <filesystem>
     #include <string>
 
@@ -47,6 +48,18 @@ namespace OpenRCT2::Chain
     // (e.g. SidecarClient used by the UI to resolve guest / venue addresses)
     // can find the socket without re-deriving the path.
     std::string GetSidecarSocketPath();
+
+    // Game-side hook for "new park / new game" boundaries. Generates a fresh
+    // 16-bit session id, calls `chain.session.begin` over the existing UDS so
+    // the sidecar flips its guest HD-derivation accountIndex + venue epoch in
+    // lockstep, and clears the C++-side `UiAddressLookup` caches so the UI
+    // re-fetches under the new identity. No-op when the runtime is down or
+    // chain mode is disabled — safe to call unconditionally from `ScenarioBegin`.
+    //
+    // Returns the newly-applied sessionId on success, or 0 if the IPC didn't
+    // land (sidecar offline, socket missing). 0 is also a valid sessionId, so
+    // callers shouldn't gate behavior on the return value — it's diagnostic.
+    uint32_t BeginNewSession();
 } // namespace OpenRCT2::Chain
 
 #endif // OPENRCT2_CHAIN
