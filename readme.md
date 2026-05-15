@@ -6,7 +6,7 @@
 
 <h1 align="center">OpenRCT2 — Claude Plays RCT2 × Monad</h1>
 
-<h3 align="center">A creative fork of <a href="https://github.com/OpenRCT2/OpenRCT2">OpenRCT2</a> that adds an in-game terminal for a coding agent (Claude Code) and an opt-in on-chain mode that mirrors every guest spend to the Monad testnet.</h3>
+<h3 align="center">A creative fork of <a href="https://github.com/OpenRCT2/OpenRCT2">OpenRCT2</a> that adds an in-game terminal for a coding agent (Claude Code) and an on-chain mode that mirrors every guest spend to the Monad testnet.</h3>
 
 ---
 
@@ -21,7 +21,7 @@
   via a relayer pool. See [`CHAIN.md`](CHAIN.md) and [`ONCHAIN_PLAN.md`](ONCHAIN_PLAN.md).
 - **Bundled fonts + toolbar art.** `data/fonts/NotoSansSymbols*` (SIL Open
   Font License, see `data/fonts/NotoSansSymbols-LICENSE.txt`) and Claude toolbar
-  icons by @jsobel.
+  icons.
 
 ---
 
