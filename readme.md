@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://openrct2.io">
-    <img src="https://raw.githubusercontent.com/OpenRCT2/OpenRCT2/develop/resources/logo/icon_x128.png" style="width: 128px;" alt="OpenRCT2 logo"/>
+    <img src="resources/logo/monad-edition.png" style="width: 256px;" alt="OpenRCT2 Monad Edition logo"/>
   </a>
 </p>
 
