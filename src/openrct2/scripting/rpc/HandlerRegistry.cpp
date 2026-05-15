@@ -35,6 +35,7 @@ namespace OpenRCT2::Scripting::Rpc
         Handlers::InitMapHandlers();
         Handlers::InitStaffHandlers();
         Handlers::InitRideHandlers();
+        Handlers::InitChainHandlers();
     }
 
     void HandlerRegistry::Register(std::string_view method, RpcHandler handler)

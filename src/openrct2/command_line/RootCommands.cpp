@@ -66,6 +66,10 @@ namespace OpenRCT2
     static u8string _rct2DataPath = {};
     static bool _silentBreakpad = false;
     static u8string _logFilePath = {};
+#ifdef OPENRCT2_CHAIN
+    static bool _chain = false;
+    static bool _noChain = false;
+#endif
 
     // clang-format off
     static constexpr CommandLineOptionDefinition kStandardOptions[]
@@ -92,6 +96,10 @@ namespace OpenRCT2
     #ifdef USE_BREAKPAD
         { CMDLINE_TYPE_SWITCH,  &_silentBreakpad,  kNAC, "silent-breakpad",   "make breakpad crash reporting silent"                       },
     #endif // USE_BREAKPAD
+    #ifdef OPENRCT2_CHAIN
+        { CMDLINE_TYPE_SWITCH,  &_chain,           kNAC, "chain",              "enable Monad chain integration for this session"            },
+        { CMDLINE_TYPE_SWITCH,  &_noChain,         kNAC, "no-chain",           "disable Monad chain integration for this session"           },
+    #endif // OPENRCT2_CHAIN
         kOptionTableEnd
     };
 
@@ -218,6 +226,11 @@ namespace OpenRCT2
         gOpenRCT2Headless = _headless;
         gOpenRCT2NoGraphics = _headless;
         gOpenRCT2SilentBreakpad = _silentBreakpad || _headless;
+
+#ifdef OPENRCT2_CHAIN
+        // Default off; --chain opts in, --no-chain wins if both are passed.
+        gOpenRCT2ChainEnabled = _chain && !_noChain;
+#endif
 
         if (!_userDataPath.empty())
         {

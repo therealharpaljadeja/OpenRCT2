@@ -1,0 +1,6 @@
+# Envio HyperIndex's generated/ package exposes the runtime + types the handlers import as
+# `from "generated"`. Listing it as a pnpm workspace creates a symlink at
+# indexer/node_modules/generated -> ../generated so Node's module resolver can find it.
+# Run `pnpm install` at indexer/ once to materialize the symlink (re-runs are idempotent).
+packages:
+  - generated

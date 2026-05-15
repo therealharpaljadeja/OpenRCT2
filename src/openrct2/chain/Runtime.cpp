@@ -1,0 +1,298 @@
+/*****************************************************************************
+ * Copyright (c) 2014-2025 OpenRCT2 developers
+ *
+ * For a complete list of all authors, please refer to contributors.md
+ * Interested in contributing? Visit https://github.com/OpenRCT2/OpenRCT2
+ *
+ * OpenRCT2 is licensed under the GNU General Public License version 3.
+ *****************************************************************************/
+
+#ifdef OPENRCT2_CHAIN
+
+    #include "Runtime.h"
+
+    #include "../Diagnostic.h"
+    #include "../OpenRCT2.h"
+    #include "../core/Json.hpp"
+    #include "Outbox.h"
+    #include "Sidecar.h"
+    #include "SidecarClient.h"
+    #include "UiAddressLookup.h"
+
+    #include <cstdlib>
+    #include <memory>
+    #include <mutex>
+    #include <random>
+    #include <string>
+    #include <system_error>
+    #include <unistd.h>
+
+namespace OpenRCT2::Chain
+{
+    namespace
+    {
+        std::mutex gRuntimeMutex;
+        std::unique_ptr<SidecarProcess> gSidecar;
+        bool gOutboxStarted = false;
+        std::string gSocketPath; // mirrors what we passed to `--socket`; "" while down.
+
+        std::filesystem::path FindSidecarEntry(const std::filesystem::path& repoRoot)
+        {
+            // Plan §4.0: `chain-sidecar/dist/main.js`. The sidecar build target is part of
+            // `agent_bundle`, so this should exist in any dev build. We don't try to fall
+            // back to `npm run build` here — the agent_bundle target is the contract.
+            return repoRoot / "chain-sidecar" / "dist" / "main.js";
+        }
+
+        // Resolve `name` to an absolute executable path. `execve` (which we use post-fork)
+        // does *not* search PATH — passing a bare "node" silently fails with _exit(127) and
+        // produces no diagnostic. We resolve here, on the parent side, so missing-node
+        // surfaces as a normal `EnsureRuntime` error.
+        std::string LookupExecutable(const std::string& name)
+        {
+            if (name.find('/') != std::string::npos)
+                return name;
+
+            if (const char* pathEnv = std::getenv("PATH"); pathEnv != nullptr)
+            {
+                std::string path = pathEnv;
+                std::size_t start = 0;
+                while (start <= path.size())
+                {
+                    std::size_t end = path.find(':', start);
+                    if (end == std::string::npos)
+                        end = path.size();
+                    std::string segment = path.substr(start, end - start);
+                    if (!segment.empty())
+                    {
+                        auto candidate = std::filesystem::path(segment) / name;
+                        if (::access(candidate.c_str(), X_OK) == 0)
+                            return candidate.string();
+                    }
+                    if (end == path.size())
+                        break;
+                    start = end + 1;
+                }
+            }
+
+            // GUI launches on macOS often inherit a bare PATH (`/usr/bin:/bin`). Fall back
+            // to the standard Homebrew + system locations so a double-click .app launch
+            // still finds Node.
+            for (const char* p : { "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node" })
+            {
+                if (::access(p, X_OK) == 0)
+                    return p;
+            }
+            return {};
+        }
+    } // namespace
+
+    bool EnsureRuntime(const RuntimeOptions& opts, std::string& errorOut)
+    {
+        std::lock_guard<std::mutex> lock(gRuntimeMutex);
+        if (gSidecar && gSidecar->IsRunning() && gOutboxStarted)
+            return true;
+
+        // ---- Resolve paths.
+        if (opts.repoRoot.empty())
+        {
+            errorOut = "chain runtime: repoRoot is empty";
+            return false;
+        }
+        if (opts.workspace.empty())
+        {
+            errorOut = "chain runtime: workspace is empty";
+            return false;
+        }
+
+        const auto chainDir = opts.workspace / "chain";
+        std::error_code ec;
+        std::filesystem::create_directories(chainDir, ec);
+        if (ec)
+        {
+            errorOut = "chain runtime: cannot create " + chainDir.string() + ": " + ec.message();
+            return false;
+        }
+
+        const auto walPath = chainDir / "outbox.wal";
+        const auto cursorPath = chainDir / "outbox.cursor";
+        const auto socketPath = chainDir / "sidecar.sock";
+        const auto sidecarLogPath = chainDir / "sidecar.log";
+        const auto keystorePath = opts.keystorePath.empty() ? (chainDir / "keystore.json") : opts.keystorePath;
+
+        const auto sidecarEntry = FindSidecarEntry(opts.repoRoot);
+        if (!std::filesystem::exists(sidecarEntry))
+        {
+            errorOut = "chain runtime: sidecar entry not found at " + sidecarEntry.string()
+                + " — build with `cmake --build build --target agent_bundle`";
+            return false;
+        }
+
+        // ---- Construct + start the game-side Outbox first; if this fails we don't bother
+        // launching the sidecar (it would just spin trying to read an absent WAL).
+        if (!gOutboxStarted)
+        {
+            OutboxOptions oboxOpts;
+            oboxOpts.walPath = walPath.string();
+            // maxBytes / ringCapacity defaults from chain/Outbox.h apply (500 MiB / 65536).
+            auto outbox = std::make_unique<Outbox>(std::move(oboxOpts));
+            if (!outbox->Start())
+            {
+                errorOut = "chain runtime: Outbox::Start failed (see prior log)";
+                return false;
+            }
+            SetOutbox(std::move(outbox));
+            gOutboxStarted = true;
+
+            // Bootstrap the park-entrance venue. Guests pay at the entrance with
+            // `venueId == kVenueIdEntrance` (Peep.cpp), so the on-chain VenueRegistry needs
+            // a matching entry or every entrance fee drops at the dispatcher with
+            // `VenueNotRegistered`. Outbox dedupes, so re-runs are safe.
+            if (auto* startedOutbox = GetOutbox())
+            {
+                startedOutbox->PushVenueRegistered(kVenueIdEntrance, VenueKind::ParkEntrance, "Park Entrance", "");
+            }
+        }
+
+        // ---- Resolve node before fork — `execve` does no PATH search.
+        const auto nodeBin = LookupExecutable("node");
+        if (nodeBin.empty())
+        {
+            errorOut = "chain runtime: `node` not found in PATH or standard install locations "
+                       "(/opt/homebrew/bin, /usr/local/bin, /usr/bin)";
+            return false;
+        }
+
+        // ---- Build sidecar argv. Mirrors the flags introduced across M2.x / M3.x.
+        SidecarProcess::Options spawnOpts;
+        spawnOpts.workingDirectory = opts.repoRoot.string();
+        spawnOpts.logFilePath = sidecarLogPath.string();
+        spawnOpts.argv = {
+            nodeBin,
+            sidecarEntry.string(),
+            "--socket", socketPath.string(),
+            "--outbox", walPath.string(),
+            "--outbox-cursor", cursorPath.string(),
+            "--keystore", keystorePath.string(),
+        };
+        // Optional knobs sourced from environment so the user can override without touching
+        // C++. Empty values are skipped — the sidecar's own defaults take over.
+        auto pushIfSet = [&](const char* envName, const char* flag) {
+            if (const char* v = std::getenv(envName); v != nullptr && v[0] != '\0')
+            {
+                spawnOpts.argv.emplace_back(flag);
+                spawnOpts.argv.emplace_back(v);
+            }
+        };
+        pushIfSet("MONAD_RPC_URL", "--rpc-url");
+        pushIfSet("MONAD_DEPLOYMENTS", "--deployments");
+        pushIfSet("FAUCET_OWNER_KEYFILE", "--faucet-owner-keyfile");
+
+        gSidecar = std::make_unique<SidecarProcess>();
+        std::string spawnErr;
+        if (!gSidecar->Start(spawnOpts, spawnErr))
+        {
+            errorOut = "chain runtime: sidecar spawn failed: " + spawnErr;
+            gSidecar.reset();
+            return false;
+        }
+        gSocketPath = socketPath.string();
+        LOG_INFO("chain.runtime: up; wal=%s socket=%s", walPath.string().c_str(), socketPath.string().c_str());
+        return true;
+    }
+
+    void TeardownRuntime()
+    {
+        std::lock_guard<std::mutex> lock(gRuntimeMutex);
+        if (gSidecar)
+        {
+            gSidecar->Stop();
+            gSidecar.reset();
+        }
+        if (gOutboxStarted)
+        {
+            // Drop the global; its destructor calls Stop() to drain + close the WAL.
+            SetOutbox(nullptr);
+            gOutboxStarted = false;
+        }
+        gSocketPath.clear();
+    }
+
+    bool IsRuntimeUp()
+    {
+        std::lock_guard<std::mutex> lock(gRuntimeMutex);
+        return gOutboxStarted && gSidecar && gSidecar->IsRunning();
+    }
+
+    std::string GetSidecarSocketPath()
+    {
+        std::lock_guard<std::mutex> lock(gRuntimeMutex);
+        return gSocketPath;
+    }
+
+    uint32_t BeginNewSession()
+    {
+        // Cheap guard: if chain mode isn't on, the sidecar isn't there to talk to.
+        // We *also* still clear the C++ caches below in case a prior session left
+        // stale entries before chain mode was disabled — costs nothing.
+        if (!gOpenRCT2ChainEnabled)
+        {
+            UiAddressLookup::ClearCaches();
+            return 0;
+        }
+        if (!IsRuntimeUp())
+        {
+            // Runtime hasn't been spawned yet (chain mode is on, but the AI agent
+            // terminal hasn't launched). The first `EnsureRuntime` call will pick
+            // up the sidecar's boot-time placeholder session id; the next
+            // `ScenarioBegin` after that will run this path and flip it for real.
+            UiAddressLookup::ClearCaches();
+            return 0;
+        }
+
+        // Truncate the WAL + reset producer state BEFORE flipping the sidecar's
+        // session id. If we did this in the other order, the sidecar's reader
+        // would briefly see leftover session-A bytes in the WAL, translate them
+        // under the new session-B epoch (`applyEpoch` reads the live session id),
+        // and submit them to chain with the wrong chain venue id. Doing the C++
+        // truncate first guarantees the sidecar never reads a session-A byte
+        // under a session-B epoch — by the time it polls again, the WAL is empty
+        // and its `stat.size < readOffset` shrinkage detection clears its in-
+        // memory buffer + cursor automatically.
+        if (auto* outbox = GetOutbox())
+        {
+            outbox->Reset();
+        }
+
+        // 16-bit session id. The sidecar enforces the same range; we generate it
+        // here so the game-side log shows the chosen value alongside the call.
+        // `random_device` is seeded once per call — fine, not a hot path (one
+        // call per `ScenarioBegin`).
+        std::random_device rd;
+        std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFu);
+        const uint32_t sessionId = dist(rd);
+
+        json_t params = { { "sessionId", sessionId } };
+        json_t result;
+        // Wider timeout than UI-paint lookups: the sidecar resets several caches
+        // synchronously inside the handler. 500 ms is comfortably above the
+        // observed worst-case (~10 ms) without making a stalled sidecar a UX
+        // hazard at scenario start.
+        constexpr int kCallTimeoutMs = 500;
+        const bool ok = SidecarClient::Call("chain.session.begin", params, result, kCallTimeoutMs);
+        // Always clear C++ caches, even on IPC failure. The session id we passed
+        // *might* have landed (response lost on the way back); clearing keeps
+        // the UI from serving addresses that may now be wrong, at the cost of
+        // re-fetching them once. Conservative is the right tradeoff here.
+        UiAddressLookup::ClearCaches();
+        if (!ok)
+        {
+            LOG_WARNING("chain.session.begin: IPC call failed (sessionId=0x%04x)", sessionId);
+            return sessionId;
+        }
+        LOG_INFO("chain.session.begin: applied (sessionId=0x%04x)", sessionId);
+        return sessionId;
+    }
+} // namespace OpenRCT2::Chain
+
+#endif // OPENRCT2_CHAIN

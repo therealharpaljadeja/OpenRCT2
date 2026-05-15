@@ -22,12 +22,16 @@
 #include <openrct2/actions/GuestSetFlagsAction.h>
 #include <openrct2/actions/GuestSetNameAction.h>
 #include <openrct2/actions/PeepPickupAction.h>
+#ifdef OPENRCT2_CHAIN
+    #include <openrct2/chain/UiAddressLookup.h>
+#endif
 #include <openrct2/config/Config.h>
 #include <openrct2/core/EnumUtils.hpp>
 #include <openrct2/core/String.hpp>
 #include <openrct2/drawing/Rectangle.h>
 #include <openrct2/entity/Guest.h>
 #include <openrct2/entity/Staff.h>
+#include <openrct2/ui/UiContext.h>
 #include <openrct2/localisation/Formatter.h>
 #include <openrct2/localisation/Formatting.h>
 #include <openrct2/management/Marketing.h>
@@ -50,7 +54,7 @@ using namespace OpenRCT2::Drawing;
 namespace OpenRCT2::Ui::Windows
 {
     static constexpr StringId kWindowTitle = STR_STRINGID;
-    static constexpr ScreenSize kWindowSize = { 192, 157 };
+    static constexpr ScreenSize kWindowSize = { 192, 183 };
 
     enum WindowGuestPage
     {
@@ -87,6 +91,7 @@ namespace OpenRCT2::Ui::Windows
         WIDX_RENAME,
         WIDX_LOCATE,
         WIDX_TRACK,
+        WIDX_COPY_WALLET,
 
         WIDX_HAPPINESS_LABEL = WIDX_TAB_CONTENT_START,
         WIDX_HAPPINESS_BAR,
@@ -135,7 +140,8 @@ namespace OpenRCT2::Ui::Windows
         makeWidget({167,  45}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_PICKUP_BTN), STR_PICKUP_TIP               ), // Pickup Button
         makeWidget({167,  69}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_RENAME),     STR_NAME_GUEST_TIP           ), // Rename Button
         makeWidget({167,  93}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_LOCATE),     STR_LOCATE_SUBJECT_TIP       ), // Locate Button
-        makeWidget({167, 117}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_TRACK_PEEP), STR_TOGGLE_GUEST_TRACKING_TIP)  // Track Button
+        makeWidget({167, 117}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_TRACK_PEEP), STR_TOGGLE_GUEST_TRACKING_TIP), // Track Button
+        makeWidget({167, 141}, { 24, 24}, WidgetType::flatBtn,      WindowColour::secondary, ImageId(SPR_G2_COPY),    STR_COPY_INPUT_TO_CLIPBOARD  )  // Copy wallet address button (chain-only)
     );
 
     static constexpr auto _guestWindowWidgetsStats = makeWidgets(
@@ -192,7 +198,7 @@ namespace OpenRCT2::Ui::Windows
     // clang-format on
 
     static constexpr std::array _guestWindowPageSizes = {
-        std::array{ ScreenSize{ 192, 159 }, ScreenSize{ 500, 450 } }, // WINDOW_GUEST_OVERVIEW
+        std::array{ ScreenSize{ 192, 183 }, ScreenSize{ 500, 450 } }, // WINDOW_GUEST_OVERVIEW
         std::array{ ScreenSize{ 192, 180 }, ScreenSize{ 192, 180 } }, // WINDOW_GUEST_STATS
         std::array{ ScreenSize{ 192, 180 }, ScreenSize{ 500, 400 } }, // WINDOW_GUEST_RIDES
         std::array{ ScreenSize{ 210, 148 }, ScreenSize{ 210, 148 } }, // WINDOW_GUEST_FINANCE
@@ -688,6 +694,24 @@ namespace OpenRCT2::Ui::Windows
                     GameActions::Execute(&guestSetFlagsAction, gameState);
                 }
                 break;
+#ifdef OPENRCT2_CHAIN
+                case WIDX_COPY_WALLET:
+                {
+                    // Prefer the address the sidecar pushed onto the entity; otherwise fall back to
+                    // the stub provider so the button is testable before the sidecar IPC ships.
+                    std::optional<Chain::EthAddress> addr;
+                    if (!peep->OnchainAddress.IsZero())
+                        addr = peep->OnchainAddress;
+                    else
+                        addr = Chain::UiAddressLookup::TryGetGuestAddress(peep->HdIndex);
+                    if (addr.has_value())
+                    {
+                        const auto hex = Chain::UiAddressLookup::FormatHex(*addr);
+                        GetContext()->GetUiContext().SetClipboardText(hex.c_str());
+                    }
+                    break;
+                }
+#endif
             }
         }
 
@@ -818,6 +842,25 @@ namespace OpenRCT2::Ui::Windows
                 DrawTextEllipsised(rt, screenPos, textWidth, STR_BLACK_STRING, ft, { TextAlignment::centre });
             }
 
+#ifdef OPENRCT2_CHAIN
+            // Truncated wallet address, drawn in the strip just above the action label.
+            // Pairs with WIDX_COPY_WALLET on the right column for the full-precision copy.
+            std::optional<Chain::EthAddress> walletAddr;
+            if (!peep->OnchainAddress.IsZero())
+                walletAddr = peep->OnchainAddress;
+            else
+                walletAddr = Chain::UiAddressLookup::TryGetGuestAddress(peep->HdIndex);
+            if (walletAddr.has_value())
+            {
+                const auto shortHex = Chain::UiAddressLookup::FormatHexShort(*walletAddr);
+                auto ft = Formatter();
+                ft.Add<StringId>(STR_STRING);
+                ft.Add<const char*>(shortHex.c_str());
+                const auto addrPos = windowPos + ScreenCoordsXY{ actionLabelWidget.midX(), actionLabelWidget.top - 13 };
+                DrawTextEllipsised(rt, addrPos, actionLabelWidget.width(), STR_WINDOW_COLOUR_2_STRINGID, ft, { TextAlignment::centre });
+            }
+#endif
+
             // Draw the marquee thought
             const auto& marqueeWidget = widgets[WIDX_MARQUEE];
             auto marqWidth = marqueeWidget.width() - 3;
@@ -871,8 +914,9 @@ namespace OpenRCT2::Ui::Windows
             }
 
             widgets[WIDX_VIEWPORT].right = width - 26;
-            widgets[WIDX_VIEWPORT].bottom = height - 14;
+            widgets[WIDX_VIEWPORT].bottom = height - 26;
 
+            // Address row sits above the action label.
             widgets[WIDX_ACTION_LBL].top = height - 12;
             widgets[WIDX_ACTION_LBL].bottom = height - 3;
             widgets[WIDX_ACTION_LBL].right = width - 24;
@@ -883,11 +927,22 @@ namespace OpenRCT2::Ui::Windows
             widgets[WIDX_RENAME].right = width - 2;
             widgets[WIDX_LOCATE].right = width - 2;
             widgets[WIDX_TRACK].right = width - 2;
+            widgets[WIDX_COPY_WALLET].right = width - 2;
 
             widgets[WIDX_PICKUP].left = width - 25;
             widgets[WIDX_RENAME].left = width - 25;
             widgets[WIDX_LOCATE].left = width - 25;
             widgets[WIDX_TRACK].left = width - 25;
+            widgets[WIDX_COPY_WALLET].left = width - 25;
+
+#ifdef OPENRCT2_CHAIN
+            // Hide the wallet button until the entity (or stub) has an address to offer.
+            const auto guestAddrAvailable
+                = !peep->OnchainAddress.IsZero() || Chain::UiAddressLookup::TryGetGuestAddress(peep->HdIndex).has_value();
+            widgets[WIDX_COPY_WALLET].type = guestAddrAvailable ? WidgetType::flatBtn : WidgetType::empty;
+#else
+            widgets[WIDX_COPY_WALLET].type = WidgetType::empty;
+#endif
         }
 
         void onUpdateOverview()

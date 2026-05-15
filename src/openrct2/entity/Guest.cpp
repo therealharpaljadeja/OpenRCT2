@@ -14,6 +14,10 @@
 #include "../Game.h"
 #include "../GameState.h"
 #include "../OpenRCT2.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../chain/Money.h"
+    #include "../chain/Outbox.h"
+#endif
 #include "../SpriteIds.h"
 #include "../audio/Audio.h"
 #include "../config/Config.h"
@@ -1745,7 +1749,7 @@ static bool GuestDecideAndBuyItem(Guest& guest, Ride& ride, const ShopItem shopI
     }
     else if (!(gameState.park.flags & PARK_FLAGS_NO_MONEY))
     {
-        guest.SpendMoney(*expend_type, price, expenditure);
+        guest.SpendMoney(*expend_type, price, expenditure, static_cast<uint32_t>(ride.id.ToUnderlying()) + 1u);
     }
     ride.totalProfit = AddClamp(ride.totalProfit, price - shopItemDescriptor.Cost);
     ride.windowInvalidateFlags |= RIDE_INVALIDATE_RIDE_INCOME;
@@ -2331,10 +2335,10 @@ static bool GuestShouldGoToShop(Guest& guest, Ride& ride, bool peepAtShop)
 }
 
 // Used when no logging to an expend type required
-void Guest::SpendMoney(money64 amount, ExpenditureType expenditure)
+void Guest::SpendMoney(money64 amount, ExpenditureType expenditure, uint32_t venueId)
 {
     money64 unused;
-    SpendMoney(unused, amount, expenditure);
+    SpendMoney(unused, amount, expenditure, venueId);
 }
 
 /**
@@ -2342,7 +2346,7 @@ void Guest::SpendMoney(money64 amount, ExpenditureType expenditure)
  *  rct2: 0x0069926C
  * Expend type was previously an offset saved in 0x00F1AEC0
  */
-void Guest::SpendMoney(money64& peep_expend_type, money64 amount, ExpenditureType expenditure)
+void Guest::SpendMoney(money64& peep_expend_type, money64 amount, ExpenditureType expenditure, uint32_t venueId)
 {
     assert(!(getGameState().park.flags & PARK_FLAGS_NO_MONEY));
 
@@ -2359,6 +2363,41 @@ void Guest::SpendMoney(money64& peep_expend_type, money64 amount, ExpenditureTyp
     MoneyEffect::CreateAt(amount, GetLocation(), true);
 
     OpenRCT2::Audio::Play3D(OpenRCT2::Audio::SoundId::purchase, GetLocation());
+
+#ifdef OPENRCT2_CHAIN
+    if (gOpenRCT2ChainEnabled && venueId != OpenRCT2::Chain::kVenueIdNone)
+    {
+        if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+        {
+            OpenRCT2::Chain::SpendCategory category = OpenRCT2::Chain::SpendCategory::RideFare;
+            switch (expenditure)
+            {
+                case ExpenditureType::parkEntranceTickets:
+                    category = OpenRCT2::Chain::SpendCategory::Entry;
+                    break;
+                case ExpenditureType::foodDrinkSales:
+                case ExpenditureType::foodDrinkStock:
+                    category = OpenRCT2::Chain::SpendCategory::ShopPrimary;
+                    break;
+                case ExpenditureType::shopSales:
+                case ExpenditureType::shopStock:
+                    category = OpenRCT2::Chain::SpendCategory::ShopSecondary;
+                    break;
+                case ExpenditureType::parkRideTickets:
+                default:
+                    category = OpenRCT2::Chain::SpendCategory::RideFare;
+                    break;
+            }
+            outbox->PushGuestSpend(
+                Id.ToUnderlying(),
+                HdIndex,
+                venueId,
+                OpenRCT2::Chain::GameMoneyToWei(amount),
+                category,
+                getGameState().currentTicks);
+        }
+    }
+#endif
 }
 
 void Guest::SetHasRidden(const Ride& ride)
@@ -3910,7 +3949,9 @@ void Guest::UpdateRideFreeVehicleEnterRide(Ride& ride)
         {
             ride.totalProfit = AddClamp<money64>(ride.totalProfit, ridePrice);
             ride.windowInvalidateFlags |= RIDE_INVALIDATE_RIDE_INCOME;
-            SpendMoney(PaidOnRides, ridePrice, ExpenditureType::parkRideTickets);
+            SpendMoney(
+                PaidOnRides, ridePrice, ExpenditureType::parkRideTickets,
+                static_cast<uint32_t>(ride.id.ToUnderlying()) + 1u);
         }
     }
 
@@ -7379,6 +7420,14 @@ Guest* Guest::Generate(const CoordsXYZ& coords)
     peep->PeepId = gameState.nextGuestNumber++;
     peep->Name = nullptr;
 
+#ifdef OPENRCT2_CHAIN
+    // Reset chain identity on slot reuse — entity slots are recycled, so a guest spawning
+    // into a slot that previously held a different guest would otherwise inherit the prior
+    // wallet. M4.3 will assign HdIndex from the sidecar; OnchainAddress arrives later.
+    peep->HdIndex = 0;
+    peep->OnchainAddress = OpenRCT2::Chain::EthAddress{};
+#endif
+
     money64 cash = (static_cast<money64>(ScenarioRand() & 0x3) * 100) - 100 + gameState.scenarioOptions.guestInitialCash;
     if (cash < 0)
         cash = 0;
@@ -7447,6 +7496,18 @@ Guest* Guest::Generate(const CoordsXYZ& coords)
         // Call the subscriptions
         auto e = obj.Take();
         hookEngine.Call(OpenRCT2::Scripting::HookType::guestGeneration, e, true);
+    }
+#endif
+
+#ifdef OPENRCT2_CHAIN
+    if (gOpenRCT2ChainEnabled)
+    {
+        if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+        {
+            peep->HdIndex = outbox->AllocateHdIndex();
+            outbox->PushGuestEntry(
+                peep->Id.ToUnderlying(), peep->HdIndex, OpenRCT2::Chain::GameMoneyToWei(peep->CashInPocket));
+        }
     }
 #endif
 

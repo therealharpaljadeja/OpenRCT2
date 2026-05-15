@@ -45,6 +45,8 @@
 #include "../../../object/SmallSceneryEntry.h"
 #include "../../../object/SmallSceneryObject.h"
 #include "../../../object/LargeSceneryObject.h"
+#include "../../../object/LargeSceneryEntry.h"
+#include "../../../actions/LargeSceneryPlaceAction.h"
 #include "../../../object/TerrainEdgeObject.h"
 #include "../../../object/TerrainSurfaceObject.h"
 #include "../../../object/WallObject.h"
@@ -476,7 +478,13 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
         }
 
         // Scenery helper functions
-        std::optional<ObjectEntryIndex> ResolveSceneryEntryIndex(std::string_view identifier, std::string& errorMessage)
+        struct ResolvedScenery
+        {
+            ObjectEntryIndex entryIndex;
+            bool isLarge;
+        };
+
+        std::optional<ResolvedScenery> ResolveSceneryEntry(std::string_view identifier, std::string& errorMessage)
         {
             auto* context = GetContext();
             if (context == nullptr)
@@ -502,19 +510,47 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
                 return std::nullopt;
             }
 
-            const auto* entry = OpenRCT2::ObjectManager::GetObjectEntry<SmallSceneryEntry>(entryIndex);
-            if (entry == nullptr)
+            // Try small scenery first
+            if (manager.GetLoadedObject<SmallSceneryObject>(entryIndex) != nullptr)
             {
-                errorMessage = "Identifier '" + std::string(identifier) + "' is not a small scenery object";
-                return std::nullopt;
-            }
-            if (entry->HasFlag(SMALL_SCENERY_FLAG_IS_TREE))
-            {
-                errorMessage = "Object '" + std::string(identifier) + "' is a tree (use 'trees' commands instead)";
-                return std::nullopt;
+                const auto* entry = OpenRCT2::ObjectManager::GetObjectEntry<SmallSceneryEntry>(entryIndex);
+                if (entry != nullptr)
+                {
+                    if (entry->HasFlag(SMALL_SCENERY_FLAG_IS_TREE))
+                    {
+                        errorMessage = "Object '" + std::string(identifier) + "' is a tree (use 'trees' commands instead)";
+                        return std::nullopt;
+                    }
+                    return ResolvedScenery{ entryIndex, false };
+                }
             }
 
-            return entryIndex;
+            // Then large scenery
+            if (manager.GetLoadedObject<LargeSceneryObject>(entryIndex) != nullptr)
+            {
+                const auto* entry = OpenRCT2::ObjectManager::GetObjectEntry<LargeSceneryEntry>(entryIndex);
+                if (entry != nullptr)
+                {
+                    return ResolvedScenery{ entryIndex, true };
+                }
+            }
+
+            errorMessage = "Identifier '" + std::string(identifier) + "' is not a placeable scenery object";
+            return std::nullopt;
+        }
+
+        // Backward-compatible alias for callers that only care about small scenery.
+        std::optional<ObjectEntryIndex> ResolveSceneryEntryIndex(std::string_view identifier, std::string& errorMessage)
+        {
+            auto resolved = ResolveSceneryEntry(identifier, errorMessage);
+            if (!resolved)
+                return std::nullopt;
+            if (resolved->isLarge)
+            {
+                errorMessage = "Identifier '" + std::string(identifier) + "' is a large scenery object";
+                return std::nullopt;
+            }
+            return resolved->entryIndex;
         }
 
         json_t BuildSceneryDescriptor(ObjectEntryIndex entryIndex, const std::string& identifier)
@@ -538,10 +574,11 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
         json_t BuildSceneryCatalogPayload(IContext& context)
         {
             auto& manager = context.GetObjectManager();
-            auto maxEntries = static_cast<ObjectEntryIndex>(getObjectEntryGroupCount(ObjectType::smallScenery));
             json_t entries = json_t::array();
 
-            for (ObjectEntryIndex i = 0; i < maxEntries; ++i)
+            // Small scenery entries (single-tile decorations)
+            auto maxSmall = static_cast<ObjectEntryIndex>(getObjectEntryGroupCount(ObjectType::smallScenery));
+            for (ObjectEntryIndex i = 0; i < maxSmall; ++i)
             {
                 auto* object = manager.GetLoadedObject<SmallSceneryObject>(i);
                 if (object == nullptr)
@@ -564,6 +601,7 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
                 json_t node = json_t::object();
                 node["identifier"] = std::string(object->GetIdentifier());
                 node["entryIndex"] = i;
+                node["type"] = "small";
 
                 auto name = object->GetName();
                 if (!name.empty())
@@ -595,6 +633,51 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
                     flags.push_back("hasSecondaryColour");
                 if (entry->HasFlag(SMALL_SCENERY_FLAG_STACKABLE))
                     flags.push_back("stackable");
+                node["flags"] = flags;
+
+                entries.push_back(node);
+            }
+
+            // Large scenery entries (multi-tile decorations like signs and statues)
+            auto maxLarge = static_cast<ObjectEntryIndex>(getObjectEntryGroupCount(ObjectType::largeScenery));
+            for (ObjectEntryIndex i = 0; i < maxLarge; ++i)
+            {
+                auto* object = manager.GetLoadedObject<LargeSceneryObject>(i);
+                if (object == nullptr)
+                {
+                    continue;
+                }
+
+                const auto* entry = OpenRCT2::ObjectManager::GetObjectEntry<LargeSceneryEntry>(i);
+                if (entry == nullptr)
+                {
+                    continue;
+                }
+
+                json_t node = json_t::object();
+                node["identifier"] = std::string(object->GetIdentifier());
+                node["entryIndex"] = i;
+                node["type"] = "large";
+
+                auto name = object->GetName();
+                if (!name.empty())
+                {
+                    node["name"] = std::string(name);
+                }
+
+                node["price"] = MoneyToDouble(entry->price);
+                node["removalPrice"] = MoneyToDouble(entry->removal_price);
+                node["tileCount"] = static_cast<int>(entry->tiles.size());
+
+                json_t flags = json_t::array();
+                if (entry->HasFlag(LARGE_SCENERY_FLAG_HAS_PRIMARY_COLOUR))
+                    flags.push_back("hasPrimaryColour");
+                if (entry->HasFlag(LARGE_SCENERY_FLAG_HAS_SECONDARY_COLOUR))
+                    flags.push_back("hasSecondaryColour");
+                if (entry->HasFlag(LARGE_SCENERY_FLAG_HAS_TERTIARY_COLOUR))
+                    flags.push_back("hasTertiaryColour");
+                if (entry->HasFlag(LARGE_SCENERY_FLAG_3D_TEXT))
+                    flags.push_back("has3dText");
                 node["flags"] = flags;
 
                 entries.push_back(node);
@@ -1938,8 +2021,8 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
             }
 
             std::string errorMessage;
-            auto entryIndexOpt = ResolveSceneryEntryIndex(*sceneryId, errorMessage);
-            if (!entryIndexOpt)
+            auto resolved = ResolveSceneryEntry(*sceneryId, errorMessage);
+            if (!resolved)
             {
                 return RpcResult::Error(kErrorInvalidParams, errorMessage);
             }
@@ -1979,16 +2062,33 @@ namespace OpenRCT2::Scripting::Rpc::Handlers
                 secondaryColour = static_cast<uint8_t>(*colourParam);
             }
 
+            uint8_t tertiaryColour = 0;
+            if (auto colourParam = GetIntParam(params, "tertiaryColour"))
+            {
+                tertiaryColour = static_cast<uint8_t>(*colourParam);
+            }
+
             CoordsXYZD loc{ coords.x, coords.y, zCoord, direction };
-            auto action = GameActions::SmallSceneryPlaceAction(loc, quadrant, entryIndexOpt.value(), primaryColour, secondaryColour, 0);
-            auto result = GameActions::Execute(&action, getGameState());
+            GameActions::Result result;
+            if (resolved->isLarge)
+            {
+                auto action = GameActions::LargeSceneryPlaceAction(loc, resolved->entryIndex, primaryColour, secondaryColour, tertiaryColour);
+                result = GameActions::Execute(&action, getGameState());
+            }
+            else
+            {
+                auto action = GameActions::SmallSceneryPlaceAction(loc, quadrant, resolved->entryIndex, primaryColour, secondaryColour, 0);
+                result = GameActions::Execute(&action, getGameState());
+            }
+
             if (result.Error != GameActions::Status::Ok)
             {
                 return RpcResult::Error(kErrorActionFailed, BuildGameActionErrorMessage(result));
             }
 
             json_t payload = BuildActionSuccessPayload(result);
-            payload["scenery"] = BuildSceneryDescriptor(entryIndexOpt.value(), *sceneryId);
+            payload["scenery"] = BuildSceneryDescriptor(resolved->entryIndex, *sceneryId);
+            payload["scenery"]["type"] = resolved->isLarge ? "large" : "small";
             payload["tile"] = json_t::object({ { "x", *xParam }, { "y", *yParam } });
             std::string contextLabel = "Placed " + *sceneryId + " at (" + std::to_string(*xParam) + ","
                 + std::to_string(*yParam) + ")";

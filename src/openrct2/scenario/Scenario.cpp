@@ -12,6 +12,9 @@
 #include "../Cheats.h"
 #include "../Context.h"
 #include "../Date.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../chain/Runtime.h"
+#endif
 #include "../FileClassifier.h"
 #include "../Game.h"
 #include "../GameState.h"
@@ -86,6 +89,14 @@ void ScenarioBegin(GameState_t& gameState)
         ContextOpenWindowView(WindowView::parkObjective);
 
     gScreenAge = 0;
+
+#ifdef OPENRCT2_CHAIN
+    // New-game boundary: tell the chain sidecar to flip its session id so guest
+    // HD addresses + venue chain ids don't collide with the previous session's
+    // explorer history. Safe no-op when chain mode is off / sidecar not yet
+    // spawned (the AI agent terminal launches the sidecar lazily).
+    OpenRCT2::Chain::BeginNewSession();
+#endif
 }
 
 void ScenarioReset(GameState_t& gameState)

@@ -10,6 +10,13 @@
 
 #include "../Diagnostic.h"
 #include "../GameState.h"
+#ifdef OPENRCT2_CHAIN
+    #include "../Context.h"
+    #include "../OpenRCT2.h"
+    #include "../chain/Outbox.h"
+    #include "../object/ObjectManager.h"
+    #include "../object/RideObject.h"
+#endif
 #include "../management/Finance.h"
 #include "../ride/MazeCost.h"
 #include "../ride/RideData.h"
@@ -204,6 +211,24 @@ namespace OpenRCT2::GameActions
         {
             ride->overallView = startLoc;
         }
+
+#ifdef OPENRCT2_CHAIN
+        // Announce the maze on chain only when a real (non-ghost) tile commits. Outbox dedupes,
+        // so subsequent maze tiles after the first are no-ops on the chain side.
+        if (gOpenRCT2ChainEnabled && !(flags & GAME_COMMAND_FLAG_GHOST))
+        {
+            if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+            {
+                std::string_view objectId;
+                auto* rideObj = OpenRCT2::GetContext()->GetObjectManager().GetLoadedObject<RideObject>(ride->subtype);
+                if (rideObj != nullptr)
+                    objectId = rideObj->GetIdentifier();
+                outbox->PushVenueRegistered(
+                    static_cast<uint32_t>(_rideIndex.ToUnderlying()) + 1u, OpenRCT2::Chain::VenueKind::Ride,
+                    ride->getName(), objectId);
+            }
+        }
+#endif
 
         return res;
     }

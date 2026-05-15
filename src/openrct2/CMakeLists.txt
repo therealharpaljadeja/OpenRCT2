@@ -328,6 +328,7 @@ target_compile_definitions(libopenrct2 PUBLIC
     $<$<BOOL:${DISABLE_TTF}>:DISABLE_TTF>
     $<$<BOOL:${DISABLE_VERSION_CHECKER}>:DISABLE_VERSION_CHECKER>
     $<$<BOOL:${ENABLE_SCRIPTING}>:ENABLE_SCRIPTING>
+    $<$<BOOL:${OPENRCT2_CHAIN}>:OPENRCT2_CHAIN>
 )
 
 target_compile_options(libopenrct2 PUBLIC $<$<BOOL:${ENABLE_ASAN}>:-fsanitize=address>)

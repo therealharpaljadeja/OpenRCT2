@@ -9,6 +9,9 @@
 
 #include "Peep.h"
 
+#ifdef OPENRCT2_CHAIN
+    #include "../chain/Outbox.h"
+#endif
 #include "../Cheats.h"
 #include "../Context.h"
 #include "../Diagnostic.h"
@@ -715,6 +718,16 @@ void PeepEntityRemove(Peep* peep)
 
         News::DisableNewsItems(News::ItemType::peep, staff->Id.ToUnderlying());
     }
+#ifdef OPENRCT2_CHAIN
+    if (gOpenRCT2ChainEnabled && guest != nullptr)
+    {
+        if (auto* outbox = OpenRCT2::Chain::GetOutbox())
+        {
+            outbox->PushGuestExit(peep->Id.ToUnderlying(), guest->HdIndex);
+        }
+    }
+#endif
+
     getGameState().entities.EntityRemove(peep);
 
     auto intent = Intent(wasGuest ? INTENT_ACTION_REFRESH_GUEST_LIST : INTENT_ACTION_REFRESH_STAFF_LIST);
@@ -1888,7 +1901,14 @@ static bool PeepInteractWithEntrance(Peep* peep, const CoordsXYE& coords, uint8_
             }
 
             gameState.park.totalIncomeFromAdmissions += entranceFee;
-            guest->SpendMoney(guest->PaidToEnter, entranceFee, ExpenditureType::parkEntranceTickets);
+            guest->SpendMoney(
+                guest->PaidToEnter, entranceFee, ExpenditureType::parkEntranceTickets,
+#ifdef OPENRCT2_CHAIN
+                OpenRCT2::Chain::kVenueIdEntrance
+#else
+                0u
+#endif
+            );
             guest->PeepFlags |= PEEP_FLAGS_HAS_PAID_FOR_PARK_ENTRY;
         }
 
@@ -2260,7 +2280,8 @@ static bool PeepInteractWithShop(Peep* peep, const CoordsXYE& coords)
         {
             ride->totalProfit = AddClamp(ride->totalProfit, cost);
             ride->windowInvalidateFlags |= RIDE_INVALIDATE_RIDE_INCOME;
-            guest->SpendMoney(cost, ExpenditureType::parkRideTickets);
+            guest->SpendMoney(
+                cost, ExpenditureType::parkRideTickets, static_cast<uint32_t>(ride->id.ToUnderlying()) + 1u);
         }
 
         auto coordsCentre = coords.ToTileCentre();

@@ -28,5 +28,5 @@ namespace OpenRCT2
     /**
      * Used only by the Scenario Editor.
      */
-    extern const std::array<std::string_view, 37> kDefaultScenarioObjects;
+    extern const std::array<std::string_view, 40> kDefaultScenarioObjects;
 } // namespace OpenRCT2

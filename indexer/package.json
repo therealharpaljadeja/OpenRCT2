@@ -1,0 +1,23 @@
+{
+  "name": "openrct2-park-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Envio HyperIndex project for the OpenRCT2 × Monad demo park.",
+  "packageManager": "pnpm@10.33.4",
+  "scripts": {
+    "codegen": "envio codegen",
+    "dev": "envio dev",
+    "start": "envio start",
+    "stop": "envio stop",
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "generated": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "envio": "^2.32.12",
+    "typescript": "^5.6.0"
+  }
+}
